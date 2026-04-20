@@ -1,4 +1,5 @@
 """云端清单生成交互脚本（由 云端生成清单.bat 调用）"""
+
 import json
 import lzma
 import os
@@ -10,9 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sync_common import (
-    scan_directory, default_hash_algo,
+    scan_directory,
+    default_hash_algo,
     human_readable_size,
-    normalize_path, should_ignore_dir, should_ignore_file,
+    normalize_path,
+    should_ignore_dir,
+    should_ignore_file,
     init_ignore_rules,
 )
 from config import ROOT, SYNC_TOOLS_DIR
@@ -20,9 +24,16 @@ from config import ROOT, SYNC_TOOLS_DIR
 from rich.console import Console
 
 from rich.progress import (
-    Progress, SpinnerColumn, BarColumn, TextColumn,
-    TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn,
-    TransferSpeedColumn, FileSizeColumn, TotalFileSizeColumn,
+    Progress,
+    SpinnerColumn,
+    BarColumn,
+    TextColumn,
+    TaskProgressColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+    FileSizeColumn,
+    TotalFileSizeColumn,
 )
 from rich.panel import Panel
 
@@ -33,7 +44,7 @@ def ask(prompt: str, choices: list[str], default: str) -> str:
     opts = "/".join(c.upper() if c == default else c for c in choices)
     while True:
         ans = input(f"{prompt} [{opts}]: ").strip().lower()
-        if ans == "" :
+        if ans == "":
             return default
         if ans in choices:
             return ans
@@ -48,7 +59,8 @@ def count_files(root: Path) -> tuple[int, int]:
     for dirpath, dirnames, filenames in os.walk(root):
         rel = os.path.relpath(dirpath, root)
         dirnames[:] = [
-            d for d in dirnames
+            d
+            for d in dirnames
             if not should_ignore_dir(
                 normalize_path(os.path.join(rel, d)) if rel != "." else d
             )
@@ -67,15 +79,19 @@ def count_files(root: Path) -> tuple[int, int]:
 
 def main():
     os.system("cls")
-    console.print(Panel.fit(
-        f"[bold cyan]云端清单生成工具[/bold cyan]\n[dim]项目: {ROOT}[/dim]",
-        border_style="cyan"
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold cyan]云端清单生成工具[/bold cyan]\n[dim]项目: {ROOT}[/dim]",
+            border_style="cyan",
+        )
+    )
     console.print()
 
     use_hash = ask("启用 xxhash（更精确，大文件会慢一些）", ["y", "n"], "n") == "y"
     hash_algo = default_hash_algo() if use_hash else None
-    mode_str = f"size + mtime + [green]{hash_algo}[/green]" if use_hash else "size + mtime"
+    mode_str = (
+        f"size + mtime + [green]{hash_algo}[/green]" if use_hash else "size + mtime"
+    )
     console.print(f"  模式: {mode_str}\n")
 
     console.print()
@@ -93,11 +109,17 @@ def main():
     ) as prog:
         t = prog.add_task("正在统计文件数...", total=None)
         total_files, total_bytes = count_files(ROOT)
-        prog.update(t, completed=total_files, total=total_files,
-                    description=f"统计完成: {total_files} 个文件 / {human_readable_size(total_bytes)}")
+        prog.update(
+            t,
+            completed=total_files,
+            total=total_files,
+            description=f"统计完成: {total_files} 个文件 / {human_readable_size(total_bytes)}",
+        )
 
-    console.print(f"  共 [cyan]{total_files}[/cyan] 个文件，"
-                  f"合计 [cyan]{human_readable_size(total_bytes)}[/cyan]\n")
+    console.print(
+        f"  共 [cyan]{total_files}[/cyan] 个文件，"
+        f"合计 [cyan]{human_readable_size(total_bytes)}[/cyan]\n"
+    )
 
     # ── 阶段二：扫描（含 hash 时按字节更新）──────────────────────
     console.print("[bold]阶段 2/2  扫描目录...[/bold]")
@@ -141,11 +163,11 @@ def main():
             current_file = rel_path
             short = rel_path if len(rel_path) <= 50 else "..." + rel_path[-47:]
             if not use_hash:
-                prog.update(task, advance=1,
-                            description=f"[{files_done}/{total_files}] {short}")
+                prog.update(
+                    task, advance=1, description=f"[{files_done}/{total_files}] {short}"
+                )
             else:
-                prog.update(task,
-                            description=f"[{files_done}/{total_files}] {short}")
+                prog.update(task, description=f"[{files_done}/{total_files}] {short}")
 
         def on_bytes(n: int):
             prog.update(task, advance=n)
@@ -161,7 +183,7 @@ def main():
     console.print()
 
     # ── 询问保存路径 ───────────────────────────────────────────────
-    save_here = ask("将清单文件保存在当前代码文件夹（bat 同级目录）", ["y", "n"], "y")
+    save_here = ask("将清单文件保存在当前文件夹（bat 同级目录）", ["y", "n"], "y")
     if save_here == "y":
         out_dir = SYNC_TOOLS_DIR
     else:
@@ -197,16 +219,19 @@ def main():
         f.write(json_bytes)
 
     orig_kb = len(json_bytes) / 1024
-    xz_kb   = xz_path.stat().st_size / 1024
+    xz_kb = xz_path.stat().st_size / 1024
 
-    console.print(Panel(
-        f"[green]扫描完成[/green]  {len(file_list)} 个文件"
-        + (f"，[yellow]{len(errors)} 个错误[/yellow]" if errors else "") + "\n\n"
-        f"[bold cyan]manifest.json.xz[/bold cyan]  {orig_kb:.0f} KB → {xz_kb:.0f} KB\n\n"
-        f"[bold]文件位置（直接拷贝）:[/bold]\n  [cyan]{xz_path}[/cyan]",
-        title="完成",
-        border_style="green",
-    ))
+    console.print(
+        Panel(
+            f"[green]扫描完成[/green]  {len(file_list)} 个文件"
+            + (f"，[yellow]{len(errors)} 个错误[/yellow]" if errors else "")
+            + "\n\n"
+            f"[bold cyan]manifest.json.xz[/bold cyan]  {orig_kb:.0f} KB → {xz_kb:.0f} KB\n\n"
+            f"[bold]文件位置（直接拷贝）:[/bold]\n  [cyan]{xz_path}[/cyan]",
+            title="完成",
+            border_style="green",
+        )
+    )
 
 
 if __name__ == "__main__":

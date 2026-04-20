@@ -1,4 +1,5 @@
 """本机增量打包交互脚本（由 本机打包.bat 调用）"""
+
 import json
 import lzma
 import os
@@ -11,22 +12,38 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sync_common import (
-    scan_directory, parse_mtime, compute_hash,
-    human_readable_size, quick_scan,
+    scan_directory,
+    parse_mtime,
+    compute_hash,
+    human_readable_size,
+    quick_scan,
 )
 from build_sync_package import (
-    find_7z, load_cloud_manifest, compare_files,
-    generate_reports, write_sync_manifest,
-    write_delete_list, embed_apply_sync,
-    run_7z_pack, archive_cloud_manifest, parse_volume_size,
+    find_7z,
+    load_cloud_manifest,
+    compare_files,
+    generate_reports,
+    write_sync_manifest,
+    write_delete_list,
+    embed_apply_sync,
+    run_7z_pack,
+    archive_cloud_manifest,
+    parse_volume_size,
 )
 from config import ROOT, TEMP_DIR, FILE_DIR, MANIFESTS_DIR, SYNC_TOOLS_DIR
 
 from rich.console import Console
 from rich.progress import (
-    Progress, SpinnerColumn, BarColumn, TextColumn,
-    TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn,
-    TransferSpeedColumn, FileSizeColumn, TotalFileSizeColumn,
+    Progress,
+    SpinnerColumn,
+    BarColumn,
+    TextColumn,
+    TaskProgressColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+    FileSizeColumn,
+    TotalFileSizeColumn,
     MofNCompleteColumn,
 )
 from rich.panel import Panel
@@ -34,6 +51,7 @@ from rich.table import Table
 from rich import box
 
 console = Console()
+
 
 def ask(prompt: str, choices: list[str], default: str) -> str:
     opts = "/".join(c.upper() if c == default else c for c in choices)
@@ -50,15 +68,17 @@ def scan_with_progress(root: Path) -> tuple:
     """快速扫描本地文件（不含 hash），带 rich 进度条。"""
     # 先快速数文件数
     from sync_common import normalize_path, should_ignore_dir, should_ignore_file
+
     total = sum(
         1
         for dp, dns, fns in os.walk(root)
         for fn in fns
         if not should_ignore_file(fn)
         and not should_ignore_dir(
-            normalize_path(
-                os.path.join(os.path.relpath(dp, root), fn)
-            ).rsplit("/", 1)[0] or ""
+            normalize_path(os.path.join(os.path.relpath(dp, root), fn)).rsplit("/", 1)[
+                0
+            ]
+            or ""
         )
     )
 
@@ -101,7 +121,7 @@ def copy_with_progress(diff_result: dict, local_dir: str, temp_dir: str) -> list
         TimeRemainingColumn(),
         TimeElapsedColumn(),
         console=console,
-        transient=True,   # 完成后整条进度条消失，不残留在屏幕上
+        transient=True,  # 完成后整条进度条消失，不残留在屏幕上
     ) as prog:
         task = prog.add_task("复制差异文件...", total=total_bytes)
 
@@ -126,8 +146,13 @@ def show_diff_table(diff_result: dict):
     def make_table(title: str, color: str, rows: list, show_reason: bool = False):
         if not rows:
             return
-        t = Table(title=title, box=box.SIMPLE_HEAVY, title_style=f"bold {color}",
-                  show_header=True, header_style="bold dim")
+        t = Table(
+            title=title,
+            box=box.SIMPLE_HEAVY,
+            title_style=f"bold {color}",
+            show_header=True,
+            header_style="bold dim",
+        )
         t.add_column("路径", style="dim", max_width=70)
         t.add_column("大小", justify="right", style=color)
         if show_reason:
@@ -145,10 +170,15 @@ def show_diff_table(diff_result: dict):
     make_table("更新文件", "yellow", diff_result["updated_files"], show_reason=True)
 
     del_files = diff_result.get("deleted_files", [])
-    del_dirs  = diff_result.get("deleted_dirs", [])
+    del_dirs = diff_result.get("deleted_dirs", [])
     if del_files or del_dirs:
-        t = Table(title="待删除（云端有 / 本机无）", box=box.SIMPLE_HEAVY,
-                  title_style="bold red", show_header=True, header_style="bold dim")
+        t = Table(
+            title="待删除（云端有 / 本机无）",
+            box=box.SIMPLE_HEAVY,
+            title_style="bold red",
+            show_header=True,
+            header_style="bold dim",
+        )
         t.add_column("类型", style="dim", width=4)
         t.add_column("路径", style="dim", max_width=78)
         for r in del_files[:25]:
@@ -166,10 +196,12 @@ def main():
     manifest_arg = sys.argv[1] if len(sys.argv) > 1 else None
 
     os.system("cls")
-    console.print(Panel.fit(
-        f"[bold cyan]本机增量打包工具[/bold cyan]\n[dim]项目: {ROOT}[/dim]",
-        border_style="cyan"
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold cyan]本机增量打包工具[/bold cyan]\n[dim]项目: {ROOT}[/dim]",
+            border_style="cyan",
+        )
+    )
     console.print()
 
     # 检测 7z
@@ -219,9 +251,9 @@ def main():
     # 差异比对
     console.print("\n比对差异...")
     diff = compare_files(local_files, cloud_manifest, local_dir=str(ROOT))
-    new_n  = len(diff["new_files"])
-    upd_n  = len(diff["updated_files"])
-    del_n  = len(diff["deleted_files"])
+    new_n = len(diff["new_files"])
+    upd_n = len(diff["updated_files"])
+    del_n = len(diff["deleted_files"])
     del_dir_n = len(diff.get("deleted_dirs", []))
     skip_n = len(diff["skipped_files"])
     diff_size = sum(f["size"] for f in diff["new_files"] + diff["updated_files"])
@@ -243,9 +275,9 @@ def main():
         return
 
     # 自动分卷：超过 1 GB 才分卷，否则单文件
-    ONE_GB = 1024 ** 3
-    vol_str    = "1g" if diff_size > ONE_GB else str(diff_size + 64 * 1024 * 1024)
-    do_split   = diff_size > ONE_GB
+    ONE_GB = 1024**3
+    vol_str = "1g" if diff_size > ONE_GB else str(diff_size + 64 * 1024 * 1024)
+    do_split = diff_size > ONE_GB
     volume_size_bytes = parse_volume_size(vol_str)
 
     # 预览
@@ -260,7 +292,7 @@ def main():
         return
 
     # 询问输出路径
-    save_here = ask("将打包文件保存在当前代码文件夹（bat 同级目录）", ["y", "n"], "y")
+    save_here = ask("将打包文件保存在当前文件夹（bat 同级目录）", ["y", "n"], "y")
     if save_here == "y":
         output_dir = SYNC_TOOLS_DIR
     else:
@@ -277,15 +309,21 @@ def main():
             output_dir = Path(chosen)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    temp_dir   = TEMP_DIR / f"sync_{timestamp}"
+    temp_dir = TEMP_DIR / f"sync_{timestamp}"
     report_dir = FILE_DIR / "reports"
     manifest_archive_dir = MANIFESTS_DIR
 
     # 差异报告（内部留档，完成后清理）
     generate_reports(
-        diff, str(ROOT), str(manifest_path),
-        len(local_files), total_cloud, scan_errors,
-        volume_size_bytes, str(report_dir), timestamp,
+        diff,
+        str(ROOT),
+        str(manifest_path),
+        len(local_files),
+        total_cloud,
+        scan_errors,
+        volume_size_bytes,
+        str(report_dir),
+        timestamp,
     )
 
     # 复制差异文件
@@ -299,15 +337,21 @@ def main():
     write_sync_manifest(str(temp_dir), str(ROOT), diff, False)
     has_deletes = del_n > 0 or del_dir_n > 0
     if has_deletes:
-        write_delete_list(str(temp_dir), diff["deleted_files"], diff.get("deleted_dirs", []))
+        write_delete_list(
+            str(temp_dir), diff["deleted_files"], diff.get("deleted_dirs", [])
+        )
     embed_apply_sync(str(temp_dir))
 
     # 7z 打包 —— 输出到用户选择的目录
     output_7z = str(output_dir / f"sync_{timestamp}.7z")
     if do_split:
-        console.print(f"\n[bold]7z 打包[/bold]（差异 {human_readable_size(diff_size)} > 1 GB，自动 1g 分卷）...")
+        console.print(
+            f"\n[bold]7z 打包[/bold]（差异 {human_readable_size(diff_size)} > 1 GB，自动 1g 分卷）..."
+        )
     else:
-        console.print(f"\n[bold]7z 打包[/bold]（单文件，{human_readable_size(diff_size)}）...")
+        console.print(
+            f"\n[bold]7z 打包[/bold]（单文件，{human_readable_size(diff_size)}）..."
+        )
     ok = run_7z_pack(seven_zip, str(temp_dir), output_7z, vol_str)
     if not ok:
         console.print("[red][错误] 打包失败，临时目录已保留。[/red]")
@@ -321,7 +365,8 @@ def main():
 
     # 列出输出文件
     out_files = sorted(
-        f for f in os.listdir(str(output_dir))
+        f
+        for f in os.listdir(str(output_dir))
         if f.startswith(f"sync_{timestamp}") and ".7z" in f
     )
     result_lines = "\n".join(
@@ -335,12 +380,14 @@ def main():
             "[dim]解压后进入[/dim] [cyan]_apply_sync/[/cyan] [dim]文件夹，双击[/dim] [cyan]apply_sync.bat[/cyan] [dim]即可自动处理，完成后自删该文件夹[/dim]"
         )
 
-    console.print(Panel(
-        f"[green]打包完成！[/green]\n\n"
-        f"请上传到云端并解压到项目根目录:\n{result_lines}{extra}",
-        title="完成",
-        border_style="green",
-    ))
+    console.print(
+        Panel(
+            f"[green]打包完成！[/green]\n\n"
+            f"请上传到云端并解压到项目根目录:\n{result_lines}{extra}",
+            title="完成",
+            border_style="green",
+        )
+    )
 
 
 if __name__ == "__main__":
