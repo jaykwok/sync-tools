@@ -4,6 +4,8 @@ import lzma
 import os
 import shutil
 import sys
+import tkinter as tk
+from tkinter import filedialog
 from datetime import datetime
 from pathlib import Path
 
@@ -180,8 +182,18 @@ def main():
     if manifest_arg:
         manifest_path = Path(manifest_arg.strip('"'))
     else:
-        console.print("[dim]提示：下次可将 manifest.json.xz 直接拖到 bat 图标上[/dim]\n")
-        raw = input("请输入云端清单路径 (.json 或 .json.xz): ").strip().strip('"')
+        console.print("[dim]请在弹窗中选择云端清单文件...[/dim]\n")
+        root_tk = tk.Tk()
+        root_tk.withdraw()
+        root_tk.attributes("-topmost", True)
+        raw = filedialog.askopenfilename(
+            title="选择云端清单文件",
+            filetypes=[("清单文件", "*.json.xz *.json"), ("所有文件", "*.*")],
+        )
+        root_tk.destroy()
+        if not raw:
+            console.print("[yellow]已取消，未选择文件。[/yellow]")
+            return
         manifest_path = Path(raw)
 
     if not manifest_path.exists():
@@ -247,6 +259,23 @@ def main():
         console.print("已取消。")
         return
 
+    # 询问输出路径
+    save_here = ask("将打包文件保存在当前代码文件夹（bat 同级目录）", ["y", "n"], "y")
+    if save_here == "y":
+        output_dir = SYNC_TOOLS_DIR
+    else:
+        console.print("[dim]请在弹窗中选择保存文件夹...[/dim]")
+        root_tk = tk.Tk()
+        root_tk.withdraw()
+        root_tk.attributes("-topmost", True)
+        chosen = filedialog.askdirectory(title="选择打包文件保存位置")
+        root_tk.destroy()
+        if not chosen:
+            console.print("[yellow]未选择路径，已使用默认目录。[/yellow]")
+            output_dir = SYNC_TOOLS_DIR
+        else:
+            output_dir = Path(chosen)
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     temp_dir   = TEMP_DIR / f"sync_{timestamp}"
     report_dir = FILE_DIR / "reports"
@@ -273,8 +302,8 @@ def main():
         write_delete_list(str(temp_dir), diff["deleted_files"], diff.get("deleted_dirs", []))
     embed_apply_sync(str(temp_dir))
 
-    # 7z 打包 —— 输出到 sync-tools 目录，和 bat 同级方便拷走
-    output_7z = str(SYNC_TOOLS_DIR / f"sync_{timestamp}.7z")
+    # 7z 打包 —— 输出到用户选择的目录
+    output_7z = str(output_dir / f"sync_{timestamp}.7z")
     if do_split:
         console.print(f"\n[bold]7z 打包[/bold]（差异 {human_readable_size(diff_size)} > 1 GB，自动 1g 分卷）...")
     else:
@@ -290,13 +319,13 @@ def main():
     if report_dir.exists():
         shutil.rmtree(str(report_dir), ignore_errors=True)
 
-    # 列出输出文件（在 sync-tools 目录）
+    # 列出输出文件
     out_files = sorted(
-        f for f in os.listdir(str(SYNC_TOOLS_DIR))
+        f for f in os.listdir(str(output_dir))
         if f.startswith(f"sync_{timestamp}") and ".7z" in f
     )
     result_lines = "\n".join(
-        f"  [cyan]{SYNC_TOOLS_DIR / f}[/cyan]  ({human_readable_size((SYNC_TOOLS_DIR / f).stat().st_size)})"
+        f"  [cyan]{output_dir / f}[/cyan]  ({human_readable_size((output_dir / f).stat().st_size)})"
         for f in out_files
     )
     extra = ""

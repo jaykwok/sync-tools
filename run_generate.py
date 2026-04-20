@@ -3,6 +3,8 @@ import json
 import lzma
 import os
 import sys
+import tkinter as tk
+from tkinter import filedialog
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +15,7 @@ from sync_common import (
     normalize_path, should_ignore_dir, should_ignore_file,
     init_ignore_rules,
 )
-from config import ROOT
+from config import ROOT, SYNC_TOOLS_DIR
 
 from rich.console import Console
 
@@ -158,7 +160,24 @@ def main():
 
     console.print()
 
-    # ── 写出文件（xz 直接放项目根目录，方便拷贝）────────────────
+    # ── 询问保存路径 ───────────────────────────────────────────────
+    save_here = ask("将清单文件保存在当前代码文件夹（bat 同级目录）", ["y", "n"], "y")
+    if save_here == "y":
+        out_dir = SYNC_TOOLS_DIR
+    else:
+        console.print("[dim]请在弹窗中选择保存文件夹...[/dim]")
+        root_tk = tk.Tk()
+        root_tk.withdraw()
+        root_tk.attributes("-topmost", True)
+        chosen = filedialog.askdirectory(title="选择清单文件保存位置")
+        root_tk.destroy()
+        if not chosen:
+            console.print("[yellow]未选择路径，已使用默认目录。[/yellow]")
+            out_dir = SYNC_TOOLS_DIR
+        else:
+            out_dir = Path(chosen)
+
+    # ── 写出文件 ───────────────────────────────────────────────────
     generated_at = datetime.now(timezone.utc).astimezone().isoformat()
     manifest = {
         "generated_at": generated_at,
@@ -173,7 +192,7 @@ def main():
 
     json_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
 
-    xz_path = ROOT / "manifest.json.xz"
+    xz_path = out_dir / "manifest.json.xz"
     with lzma.open(xz_path, "wb", preset=6) as f:
         f.write(json_bytes)
 

@@ -96,7 +96,8 @@ copy sync-tools\.syncignore.example .syncignore
 - 日常同步选 `n`（默认，仅 mtime + size，速度快）
 - 怀疑有文件内容变化但时间戳未变时选 `y`（更精确，大文件会慢一些）
 
-完成后在**项目根目录**生成 `manifest.json.xz`，将其拷贝到本机。
+完成后在 `sync-tools\` 目录（与 bat 同级）生成 `manifest.json.xz`，将其拷贝到本机。
+脚本会询问是否保存到默认目录，选 `n` 可弹窗另存到其他位置。
 
 ### 步骤 3：本机生成增量包
 
@@ -104,11 +105,13 @@ copy sync-tools\.syncignore.example .syncignore
 
 脚本会：
 
-1. 读取云端清单，扫描本机目录
-2. 显示差异汇总（新增 / 更新 / 待删除文件数及总大小）
-3. 可选预览详细差异列表
-4. 确认后复制差异文件并打包（差异 > 1 GB 自动按 1 GB 分卷）
-5. 输出 `sync_<时间戳>.7z` 到 **`sync-tools\`** 目录（与 bat 同级）
+1. 弹窗选择云端清单文件（拖入 bat 时跳过此步）
+2. 读取云端清单，扫描本机目录
+3. 显示差异汇总（新增 / 更新 / 待删除文件数及总大小）
+4. 可选预览详细差异列表
+5. 确认打包后询问输出路径（默认 `sync-tools\`，选 `n` 可弹窗另存）
+6. 复制差异文件并打包（差异 > 1 GB 自动按 1 GB 分卷）
+7. 输出 `sync_<时间戳>.7z` 到所选目录
 
 将输出文件上传到云端（如有分卷：`.7z.001` `.7z.002` ...，需全部上传）。
 
@@ -196,8 +199,6 @@ REM 本机打包（带 hash 二次校验）
 | `target_dir` | 扫描目录（`.` 表示当前目录） |
 | `--hash` | 启用文件 hash |
 | `--hash-algo` | 算法：`xxh3_64`（默认）/ `xxh128` / `sha256` |
-| `--output DIR` | 输出目录（默认当前目录） |
-| `--no-xz` | 不生成 .xz 压缩版 |
 
 ### build_sync_package.py 参数
 
@@ -217,12 +218,12 @@ REM 本机打包（带 hash 二次校验）
 ```
 <项目根>/
 ├── .syncignore               ← 忽略规则（从 .syncignore.example 复制过来修改）
-├── manifest.json.xz          ← 云端生成后拷到这里（打包后自动存档）
 └── sync-tools/               ← 本仓库
     ├── .env                  ← 本地路径配置（不提交 git，从 .env.example 复制）
     ├── .env.example          ← 配置模板
     ├── .syncignore.example   ← 忽略规则模板
     ├── .gitignore
+    ├── manifest.json.xz      ← 云端生成后拷到这里（打包后自动存档）
     ├── sync_<时间戳>.7z      ← 本机生成的增量包（上传后可删除）
     ├── temp/                 ← 打包临时目录（自动清理，不提交 git）
     ├── rm/                   ← 软删除目录（不提交 git）

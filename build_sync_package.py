@@ -629,9 +629,7 @@ def main():
             print(f"  {fpath}  ({human_readable_size(os.path.getsize(fpath))})")
 
     if has_deletes:
-        print(f"\n解压后，在云端项目根目录运行以下命令处理删除:")
-        print(f"  python apply_sync.py . <云端项目根目录>")
-        print(f"  (apply_sync.py 已打包在压缩包根目录内)")
+        print(f"\n解压后，进入 _apply_sync/ 文件夹，双击 apply_sync.bat 处理删除。")
 
 
 if __name__ == "__main__":

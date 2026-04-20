@@ -16,9 +16,9 @@ from sync_common import scan_directory, default_hash_algo
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scan project directory and produce manifest.json.xz"
+        description="扫描项目目录并生成 manifest.json.xz"
     )
-    parser.add_argument("target_dir", help="Directory to scan")
+    parser.add_argument("target_dir", help="要扫描的目录")
     parser.add_argument(
         "--hash", dest="enable_hash", action="store_true",
         help="Enable hash (default: xxh3_64 if xxhash installed, else sha256)"
@@ -57,9 +57,9 @@ def main():
     with lzma.open(xz_path, "wb", preset=6) as f:
         f.write(json_bytes)
 
-    print(f"Scan complete: {len(files)} file(s)", flush=True)
+    print(f"扫描完成: {len(files)} 个文件", flush=True)
     if errors:
-        print(f"Warning: {len(errors)} error(s) skipped", flush=True)
+        print(f"警告: {len(errors)} 个文件跳过", flush=True)
     orig_kb = len(json_bytes) / 1024
     xz_kb = os.path.getsize(xz_path) / 1024
     print(f"manifest.json.xz: {xz_path}  ({orig_kb:.0f} KB -> {xz_kb:.0f} KB)", flush=True)
