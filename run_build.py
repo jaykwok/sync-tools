@@ -303,7 +303,7 @@ def main():
     if has_deletes:
         extra = (
             f"\n\n[dim]包内含待删除清单（文件 {del_n} 个，目录 {del_dir_n} 个）[/dim]\n"
-            "[dim]解压后双击[/dim] [cyan]apply_sync.bat[/cyan] [dim]即可自动处理，完成后自清理[/dim]"
+            "[dim]解压后进入[/dim] [cyan]_apply_sync/[/cyan] [dim]文件夹，双击[/dim] [cyan]apply_sync.bat[/cyan] [dim]即可自动处理，完成后自删该文件夹[/dim]"
         )
 
     console.print(Panel(

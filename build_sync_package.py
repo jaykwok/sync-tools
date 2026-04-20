@@ -189,6 +189,9 @@ def copy_diff_files(diff_result: dict, local_dir: str, temp_dir: str) -> list:
 
 # === 包内元数据 ===
 
+APPLY_SYNC_SUBDIR = "_apply_sync"
+
+
 def write_sync_manifest(temp_dir: str, local_dir: str, diff_result: dict, hash_check: bool):
     from sync_common import init_ignore_rules
     from config import RM_DIR
@@ -207,7 +210,9 @@ def write_sync_manifest(temp_dir: str, local_dir: str, diff_result: dict, hash_c
         "deleted_files": [e["path"] for e in diff_result["deleted_files"]],
         "rm_dir": str(RM_DIR),
     }
-    with open(os.path.join(temp_dir, "sync_manifest.json"), "w", encoding="utf-8-sig") as f:
+    meta_dir = os.path.join(temp_dir, APPLY_SYNC_SUBDIR)
+    os.makedirs(meta_dir, exist_ok=True)
+    with open(os.path.join(meta_dir, "sync_manifest.json"), "w", encoding="utf-8-sig") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
 
@@ -216,7 +221,9 @@ def write_sync_manifest(temp_dir: str, local_dir: str, diff_result: dict, hash_c
 def write_delete_list(temp_dir: str, deleted_files: list, deleted_dirs: list):
     if not deleted_files and not deleted_dirs:
         return
-    delete_list_path = os.path.join(temp_dir, "delete_list.txt")
+    meta_dir = os.path.join(temp_dir, APPLY_SYNC_SUBDIR)
+    os.makedirs(meta_dir, exist_ok=True)
+    delete_list_path = os.path.join(meta_dir, "delete_list.txt")
     with open(delete_list_path, "w", encoding="utf-8") as f:
         if deleted_files:
             f.write("[files]\n")
@@ -233,7 +240,7 @@ def write_delete_list(temp_dir: str, deleted_files: list, deleted_dirs: list):
 APPLY_SYNC_SCRIPT = r'''
 """
 云端增量同步清理脚本
-将 delete_list.txt 中的文件/目录移动到 sync-tools/rm/，完成后自删本脚本及配套文件。
+将 delete_list.txt 中的文件/目录移动到 sync-tools/rm/，完成后自删 _apply_sync 文件夹。
 由 apply_sync.bat 自动调用，无需手动传参。
 """
 import os
@@ -265,12 +272,13 @@ def parse_delete_list(path: str) -> tuple[list[str], list[str]]:
 
 
 def main():
+    # 本脚本在 _apply_sync/ 子目录内，项目根是其父目录
     script_dir = Path(__file__).resolve().parent
-    # bat 将 project_root 作为第一个参数传入
+    project_root = script_dir.parent
+
+    # bat 可传入显式 project_root 覆盖
     if len(sys.argv) >= 2:
         project_root = Path(sys.argv[1]).resolve()
-    else:
-        project_root = script_dir   # 解压到根目录时脚本就在根目录
 
     delete_list_path = script_dir / "delete_list.txt"
 
@@ -398,24 +406,17 @@ def main():
 
 
 def _self_clean(script_dir: Path, use_rich: bool):
-    """删除 delete_list.txt、apply_sync.py、apply_sync.bat 自身"""
-    targets = ["delete_list.txt", "apply_sync.py", "apply_sync.bat", "sync_manifest.json"]
-    cleaned = []
-    for name in targets:
-        p = script_dir / name
-        try:
-            if p.exists():
-                p.unlink()
-                cleaned.append(name)
-        except OSError:
-            pass
-    if cleaned:
-        msg = "已自动清理: " + ", ".join(cleaned)
-        if use_rich:
-            from rich.console import Console
-            Console().print(f"[dim]{msg}[/dim]")
-        else:
-            print(msg)
+    """删除整个 _apply_sync 文件夹"""
+    try:
+        shutil.rmtree(str(script_dir))
+        msg = f"已自动清理: {script_dir.name}/"
+    except OSError as e:
+        msg = f"清理失败: {e}"
+    if use_rich:
+        from rich.console import Console
+        Console().print(f"[dim]{msg}[/dim]")
+    else:
+        print(msg)
 
 
 if __name__ == "__main__":
@@ -426,21 +427,25 @@ APPLY_SYNC_BAT = """\
 @echo off
 chcp 65001 >nul
 setlocal
-set "ROOT=%~dp0"
-set "ROOT=%ROOT:~0,-1%"
+set "APPLY_DIR=%~dp0"
+set "APPLY_DIR=%APPLY_DIR:~0,-1%"
+set "ROOT=%~dp0.."
+for %%I in ("%ROOT%") do set "ROOT=%%~fI"
 set "PYTHON=%ROOT%\\.venv\\Scripts\\python.exe"
 if not exist "%PYTHON%" set "PYTHON=python"
-"%PYTHON%" "%ROOT%\\apply_sync.py" "%ROOT%"
+"%PYTHON%" "%APPLY_DIR%\\apply_sync.py" "%ROOT%"
 pause
 endlocal
 """
 
 
 def embed_apply_sync(temp_dir: str):
-    py_path = os.path.join(temp_dir, "apply_sync.py")
+    meta_dir = os.path.join(temp_dir, APPLY_SYNC_SUBDIR)
+    os.makedirs(meta_dir, exist_ok=True)
+    py_path = os.path.join(meta_dir, "apply_sync.py")
     with open(py_path, "w", encoding="utf-8") as f:
         f.write(APPLY_SYNC_SCRIPT)
-    bat_path = os.path.join(temp_dir, "apply_sync.bat")
+    bat_path = os.path.join(meta_dir, "apply_sync.bat")
     with open(bat_path, "w", encoding="ascii") as f:
         f.write(APPLY_SYNC_BAT)
 
