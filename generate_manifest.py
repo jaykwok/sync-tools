@@ -1,6 +1,6 @@
-"""
-Cloud-side script to generate manifest.json.xz for a project directory.
-Output goes to the project root for easy copying.
+"""云端清单生成脚本（命令行版本，适合脚本调用）。
+扫描目录并输出 manifest.json.xz 到该目录，供本机打包时使用。
+交互版本参见 run_generate.py（由 云端生成清单.bat 调用）。
 """
 
 import argparse

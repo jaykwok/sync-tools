@@ -108,7 +108,7 @@ copy sync-tools\.syncignore.example .syncignore
 2. 显示差异汇总（新增 / 更新 / 待删除文件数及总大小）
 3. 可选预览详细差异列表
 4. 确认后复制差异文件并打包（差异 > 1 GB 自动按 1 GB 分卷）
-5. 输出 `sync_<时间戳>.7z` 到**项目根目录**
+5. 输出 `sync_<时间戳>.7z` 到 **`sync-tools\`** 目录（与 bat 同级）
 
 将输出文件上传到云端（如有分卷：`.7z.001` `.7z.002` ...，需全部上传）。
 
@@ -122,11 +122,11 @@ REM 例如：
 
 ### 步骤 5：云端处理删除（如有）
 
-如果本机有删除文件，压缩包内会含 `delete_list.txt` 和 `apply_sync.bat`。  
-解压后在解压目录**双击 `apply_sync.bat`** 即可。
+如果本机有删除文件，压缩包内会含 `_apply_sync\` 子目录，里面包含 `apply_sync.bat` 等配套文件。  
+解压后进入 `_apply_sync\` 文件夹，**双击 `apply_sync.bat`** 即可。
 
 - 被删除的文件移入 `sync-tools\rm\` 软删除，不会永久丢失
-- 脚本执行完毕后自动删除自身及配套文件
+- 脚本执行完毕后自动删除整个 `_apply_sync\` 文件夹
 
 ---
 
@@ -218,12 +218,12 @@ REM 本机打包（带 hash 二次校验）
 <项目根>/
 ├── .syncignore               ← 忽略规则（从 .syncignore.example 复制过来修改）
 ├── manifest.json.xz          ← 云端生成后拷到这里（打包后自动存档）
-├── sync_<时间戳>.7z          ← 本机生成的增量包（上传后可删除）
 └── sync-tools/               ← 本仓库
     ├── .env                  ← 本地路径配置（不提交 git，从 .env.example 复制）
     ├── .env.example          ← 配置模板
     ├── .syncignore.example   ← 忽略规则模板
     ├── .gitignore
+    ├── sync_<时间戳>.7z      ← 本机生成的增量包（上传后可删除）
     ├── temp/                 ← 打包临时目录（自动清理，不提交 git）
     ├── rm/                   ← 软删除目录（不提交 git）
     ├── file_history/         ← 历史清单存档（不提交 git）
@@ -239,6 +239,18 @@ REM 本机打包（带 hash 二次校验）
     ├── 云端生成清单.bat
     ├── 本机打包.bat
     └── README.md
+```
+
+解压后的增量包结构（供参考）：
+
+```
+<解压目录>/
+├── ... 差异文件（直接覆盖到项目根）...
+└── _apply_sync/              ← 仅在有待删除文件时存在
+    ├── apply_sync.bat        ← 双击执行，完成后整个文件夹自动删除
+    ├── apply_sync.py
+    ├── delete_list.txt
+    └── sync_manifest.json
 ```
 
 ---
@@ -260,5 +272,5 @@ A: 在 `sync-tools\.env` 中添加 `ROOT=<项目根绝对路径>`，其余配置
 **Q: apply_sync.bat 执行报路径错误？**  
 A: 检查解压路径是否含特殊字符（如末尾空格）。可改用命令行手动指定：  
 ```bat
-python apply_sync.py . "D:\My Project"
+python _apply_sync\apply_sync.py "D:\My Project"
 ```

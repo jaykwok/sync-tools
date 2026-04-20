@@ -32,8 +32,8 @@ def main():
 
     # 1. Python 版本
     major, minor = sys.version_info[:2]
-    py_ok = major == 3 and minor >= 13
-    all_ok &= check("Python 版本", py_ok, f"{major}.{minor}（需要 3.13+）")
+    py_ok = major == 3 and minor >= 11
+    all_ok &= check("Python 版本", py_ok, f"{major}.{minor}（需要 3.11+，推荐 3.13+）")
 
     # 2. .venv 存在
     venv_ok = VENV_PYTHON.exists()
@@ -96,7 +96,8 @@ def main():
                     seven_zip_path if sz_ok else "未找到，请安装: https://www.7-zip.org/")
 
     # 5. sync-tools 脚本完整性
-    for script in ("sync_common.py", "generate_manifest.py", "build_sync_package.py"):
+    for script in ("sync_common.py", "config.py", "generate_manifest.py", "run_generate.py",
+                   "build_sync_package.py", "run_build.py"):
         exists = (SYNC_TOOLS / script).exists()
         all_ok &= check(f"脚本: {script}", exists)
 

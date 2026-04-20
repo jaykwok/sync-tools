@@ -1,3 +1,4 @@
+"""公共工具库：忽略规则、路径归一化、文件 hash、目录扫描。"""
 import fnmatch
 import hashlib
 import os
@@ -70,6 +71,7 @@ def _should_ignore_dir(rel_dir: str, ignore_dirs: list[str]) -> bool:
     normalized = normalize_path(rel_dir).strip("/")
     if not normalized:
         return False
+    # 大小写不敏感，兼容 Windows 文件系统（如 Agent / AGENT / agent 均视为相同）
     parts = [p.lower() for p in normalized.split("/")]
     for ignored in ignore_dirs:
         ignored_parts = [p.lower() for p in normalize_path(ignored).strip("/").split("/")]
@@ -182,17 +184,15 @@ def scan_directory(root_dir: str, enable_hash: bool = False,
                 if enable_hash:
                     file_info["hash"] = compute_hash(filepath, hash_algo, on_bytes=on_bytes)
                 files.append(file_info)
+                if on_file:
+                    on_file(rel_path, file_info["size"])
+                if progress is not None:
+                    try:
+                        progress.update(1)
+                    except Exception:
+                        pass
             except OSError as exc:
                 errors.append({"path": rel_path, "error": str(exc)})
-
-            if on_file:
-                size = file_info["size"] if "file_info" in locals() and isinstance(file_info, dict) else 0
-                on_file(rel_path, size)
-            if progress is not None:
-                try:
-                    progress.update(1)
-                except Exception:
-                    pass
 
     files.sort(key=lambda x: x["path"])
     return files, errors
