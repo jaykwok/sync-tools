@@ -70,9 +70,9 @@ def _should_ignore_dir(rel_dir: str, ignore_dirs: list[str]) -> bool:
     normalized = normalize_path(rel_dir).strip("/")
     if not normalized:
         return False
-    parts = normalized.split("/")
+    parts = [p.lower() for p in normalized.split("/")]
     for ignored in ignore_dirs:
-        ignored_parts = normalize_path(ignored).strip("/").split("/")
+        ignored_parts = [p.lower() for p in normalize_path(ignored).strip("/").split("/")]
         if parts == ignored_parts:
             return True
         if len(ignored_parts) == 1 and ignored_parts[0] in parts:

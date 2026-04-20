@@ -18,7 +18,7 @@ from build_sync_package import (
     write_delete_list, embed_apply_sync,
     run_7z_pack, archive_cloud_manifest, parse_volume_size,
 )
-from config import ROOT, TEMP_DIR, FILE_DIR, MANIFESTS_DIR
+from config import ROOT, TEMP_DIR, FILE_DIR, MANIFESTS_DIR, SYNC_TOOLS_DIR
 
 from rich.console import Console
 from rich.progress import (
@@ -273,8 +273,8 @@ def main():
         write_delete_list(str(temp_dir), diff["deleted_files"], diff.get("deleted_dirs", []))
     embed_apply_sync(str(temp_dir))
 
-    # 7z 打包 —— 输出到项目根目录，方便直接拷走
-    output_7z = str(ROOT / f"sync_{timestamp}.7z")
+    # 7z 打包 —— 输出到 sync-tools 目录，和 bat 同级方便拷走
+    output_7z = str(SYNC_TOOLS_DIR / f"sync_{timestamp}.7z")
     if do_split:
         console.print(f"\n[bold]7z 打包[/bold]（差异 {human_readable_size(diff_size)} > 1 GB，自动 1g 分卷）...")
     else:
@@ -290,13 +290,13 @@ def main():
     if report_dir.exists():
         shutil.rmtree(str(report_dir), ignore_errors=True)
 
-    # 列出输出文件（在根目录）
+    # 列出输出文件（在 sync-tools 目录）
     out_files = sorted(
-        f for f in os.listdir(str(ROOT))
+        f for f in os.listdir(str(SYNC_TOOLS_DIR))
         if f.startswith(f"sync_{timestamp}") and ".7z" in f
     )
     result_lines = "\n".join(
-        f"  [cyan]{ROOT / f}[/cyan]  ({human_readable_size((ROOT / f).stat().st_size)})"
+        f"  [cyan]{SYNC_TOOLS_DIR / f}[/cyan]  ({human_readable_size((SYNC_TOOLS_DIR / f).stat().st_size)})"
         for f in out_files
     )
     extra = ""

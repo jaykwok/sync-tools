@@ -11,6 +11,7 @@ from sync_common import (
     scan_directory, default_hash_algo,
     human_readable_size,
     normalize_path, should_ignore_dir, should_ignore_file,
+    init_ignore_rules,
 )
 from config import ROOT
 
@@ -39,6 +40,7 @@ def ask(prompt: str, choices: list[str], default: str) -> str:
 
 def count_files(root: Path) -> tuple[int, int]:
     """返回 (文件数, 总字节数)"""
+    init_ignore_rules(str(root))
     total_files = 0
     total_bytes = 0
     for dirpath, dirnames, filenames in os.walk(root):
