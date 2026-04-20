@@ -25,46 +25,94 @@
 
 ---
 
-## 快速开始
+## 环境准备
 
-### 1. 部署（两端各做一次）
+**两端均需完成以下步骤。**
+
+### 系统要求
+
+| 项目 | 要求 |
+|------|------|
+| Windows | 10 / 11 / Server 2019+ |
+| Python | **3.11 或以上**（推荐 3.13） |
+| 7-Zip | 本机打包端必须安装；云端解压用系统自带或 7-Zip 均可 |
+
+Python 下载：https://www.python.org/downloads/  
+7-Zip 下载：https://www.7-zip.org/
+
+### 创建虚拟环境并安装依赖
+
+在**项目根目录**（`sync-tools` 的上一级）执行：
 
 ```bat
-REM 在项目根目录运行，自动检测 Python / xxhash / rich / 7-Zip 并安装缺失依赖
+REM 创建虚拟环境（仅首次）
+python -m venv .venv
+
+REM 安装依赖
+.venv\Scripts\pip install xxhash rich
+```
+
+> **云端注意**：云端只用于生成清单，同样需要创建 `.venv` 并安装 `xxhash rich`。
+> 如果云端无法访问 PyPI，可在本机安装后将整个 `.venv` 目录打包传过去，
+> 或用系统 Python 直接运行（跳过 `.venv`，在 `.env` 中将 `VENV_PYTHON` 改为 `python`）。
+
+### 运行部署检测（可选）
+
+安装完成后，运行检测脚本确认环境就绪：
+
+```bat
 .venv\Scripts\python.exe sync-tools\setup_sync.py
 ```
 
-依赖项：
+脚本会自动检测 Python 版本、`.venv`、xxhash、rich、7-Zip 是否正常，并创建必要的工作目录。
 
-| 依赖 | 说明 |
-|------|------|
-| Python 3.11+ | 两端均需（推荐 3.13） |
-| [xxhash](https://pypi.org/project/xxhash/) | 可选，启用后比对更精确且比 SHA-256 快 5-10 倍 |
-| [rich](https://pypi.org/project/rich/) | 进度条显示 |
-| [7-Zip](https://www.7-zip.org/) | 本机需安装；云端解压用系统自带 `7z` 即可 |
+---
 
-### 2. 云端：生成清单
+## 快速开始
 
-双击 `sync-tools\云端生成清单.bat`
+### 步骤 1：初始化配置
 
-脚本会询问是否启用 xxhash（默认 `n`，快速模式）。  
+将 `sync-tools\.env.example` 复制为 `sync-tools\.env`（两端各自操作，`.env` 不提交 git）：
+
+```bat
+copy sync-tools\.env.example sync-tools\.env
+```
+
+通常不需要修改，默认配置即可工作。如需自定义路径，参见下方[配置](#配置)章节。
+
+将 `sync-tools\.syncignore.example` 复制到**项目根目录**并重命名：
+
+```bat
+copy sync-tools\.syncignore.example .syncignore
+```
+
+按需编辑 `.syncignore`，将不需要同步的目录和文件加入忽略规则。
+
+### 步骤 2：云端生成清单
+
+在云端项目根目录，双击 `sync-tools\云端生成清单.bat`。
+
+脚本询问是否启用 xxhash：
+- 日常同步选 `n`（默认，仅 mtime + size，速度快）
+- 怀疑有文件内容变化但时间戳未变时选 `y`（更精确，大文件会慢一些）
+
 完成后在**项目根目录**生成 `manifest.json.xz`，将其拷贝到本机。
 
-### 3. 本机：生成增量包
+### 步骤 3：本机生成增量包
 
 双击 `sync-tools\本机打包.bat`，或将 `manifest.json.xz` 直接**拖到** bat 图标上。
 
 脚本会：
 
 1. 读取云端清单，扫描本机目录
-2. 显示差异汇总（新增 / 更新 / 待删除）
+2. 显示差异汇总（新增 / 更新 / 待删除文件数及总大小）
 3. 可选预览详细差异列表
-4. 确认后打包（差异 > 1 GB 自动分卷）
+4. 确认后复制差异文件并打包（差异 > 1 GB 自动按 1 GB 分卷）
 5. 输出 `sync_<时间戳>.7z` 到**项目根目录**
 
-将所有分卷上传到云端（如有分卷：`.7z.001` `.7z.002` ...）。
+将输出文件上传到云端（如有分卷：`.7z.001` `.7z.002` ...，需全部上传）。
 
-### 4. 云端：解压覆盖
+### 步骤 4：云端解压覆盖
 
 ```bat
 7z x sync_<时间戳>.7z -o<项目根目录路径> -y
@@ -72,21 +120,19 @@ REM 例如：
 7z x sync_20260420_103000.7z -oD:\MyProject -y
 ```
 
-### 5. 云端：处理删除（如有）
+### 步骤 5：云端处理删除（如有）
 
 如果本机有删除文件，压缩包内会含 `delete_list.txt` 和 `apply_sync.bat`。  
 解压后在解压目录**双击 `apply_sync.bat`** 即可。
 
-被删除的文件移入 `sync-tools\rm\` 软删除（不永久丢失）。  
-脚本执行完自动清理自身。
+- 被删除的文件移入 `sync-tools\rm\` 软删除，不会永久丢失
+- 脚本执行完毕后自动删除自身及配套文件
 
 ---
 
 ## 配置
 
 ### `.env` 配置项
-
-复制 `sync-tools\.env.example` 为 `sync-tools\.env` 并按需修改（`.env` 不提交 git）：
 
 ```ini
 # 项目根目录（可选，默认自动推断：sync-tools 的上一级）
@@ -115,12 +161,12 @@ SEVEN_ZIP_EXTRA=C:/Program Files/7-Zip/7z.exe,C:/Program Files (x86)/7-Zip/7z.ex
 
 ### 忽略规则（`.syncignore`）
 
-在**项目根目录**创建 `.syncignore`（若不存在，使用内置默认值）：
+放在**项目根目录**，若不存在则使用内置默认值。参见 `.syncignore.example` 了解完整格式说明。
 
 ```
-# 井号开头为注释
 dir:.venv           # 忽略名为 .venv 的目录（任意层级）
 dir:sync-tools      # 忽略 sync-tools 目录（含 temp/rm/file_history）
+file:*manifest*.json.xz
 file:*.log
 file:Thumbs.db
 ```
@@ -170,25 +216,26 @@ REM 本机打包（带 hash 二次校验）
 
 ```
 <项目根>/
-├── .syncignore               ← 忽略规则（自行创建/修改）
-├── .gitignore
+├── .syncignore               ← 忽略规则（从 .syncignore.example 复制过来修改）
 ├── manifest.json.xz          ← 云端生成后拷到这里（打包后自动存档）
 ├── sync_<时间戳>.7z          ← 本机生成的增量包（上传后可删除）
-└── sync-tools/
-    ├── .env                  ← 本地路径配置（不提交 git）
-    ├── .env.example          ← 配置模板（提交 git）
-    ├── temp/                 ← 打包临时目录（自动清理）
-    ├── rm/                   ← 软删除目录
-    ├── file_history/
+└── sync-tools/               ← 本仓库
+    ├── .env                  ← 本地路径配置（不提交 git，从 .env.example 复制）
+    ├── .env.example          ← 配置模板
+    ├── .syncignore.example   ← 忽略规则模板
+    ├── .gitignore
+    ├── temp/                 ← 打包临时目录（自动清理，不提交 git）
+    ├── rm/                   ← 软删除目录（不提交 git）
+    ├── file_history/         ← 历史清单存档（不提交 git）
     │   └── manifests/
     │       └── cloud_manifest_<时间戳>.json.xz
-    ├── sync_common.py
-    ├── config.py
-    ├── generate_manifest.py
-    ├── run_generate.py
-    ├── build_sync_package.py
-    ├── run_build.py
-    ├── setup_sync.py
+    ├── sync_common.py        ← 公共库（扫描、hash、忽略规则）
+    ├── config.py             ← 配置加载（读取 .env）
+    ├── generate_manifest.py  ← 云端扫描脚本（命令行）
+    ├── run_generate.py       ← 云端交互脚本（bat 调用）
+    ├── build_sync_package.py ← 本机打包脚本（命令行）
+    ├── run_build.py          ← 本机交互脚本（bat 调用）
+    ├── setup_sync.py         ← 部署检测脚本
     ├── 云端生成清单.bat
     ├── 本机打包.bat
     └── README.md
@@ -202,10 +249,16 @@ REM 本机打包（带 hash 二次校验）
 A: 默认模式（不启用 xxhash）只读 mtime + size，速度极快。xxhash 只在需要精确校验时使用。
 
 **Q: 上传到一半断了怎么办？**  
-A: 差异 > 1 GB 时自动分卷（每卷 1 GB），只需重传未完成的卷。
+A: 差异 > 1 GB 时自动分卷（每卷 1 GB），只需重传未完成的卷，其余卷不受影响。
+
+**Q: 云端无法访问 PyPI，无法安装 xxhash / rich？**  
+A: 可在本机安装好依赖后，将整个 `.venv` 目录打包上传到云端解压即可。或在 `.env` 中设置 `VENV_PYTHON=python` 使用系统 Python，但届时无进度条显示。
 
 **Q: 想把 sync-tools 放到其他位置？**  
 A: 在 `sync-tools\.env` 中添加 `ROOT=<项目根绝对路径>`，其余配置不变。
 
-**Q: 两端 Python 版本不同？**  
-A: 最低要求 Python 3.11。云端只需标准库 + xxhash + rich，无其他依赖。
+**Q: apply_sync.bat 执行报路径错误？**  
+A: 检查解压路径是否含特殊字符（如末尾空格）。可改用命令行手动指定：  
+```bat
+python apply_sync.py . "D:\My Project"
+```

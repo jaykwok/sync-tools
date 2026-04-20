@@ -100,7 +100,7 @@ def main():
         exists = (SYNC_TOOLS / script).exists()
         all_ok &= check(f"脚本: {script}", exists)
 
-    # 6. Agent 目录结构
+    # 6. 工作目录结构
     for path in (FILE_DIR, TEMP_DIR, RM_DIR):
         path.mkdir(parents=True, exist_ok=True)
         rel = path.relative_to(ROOT)
