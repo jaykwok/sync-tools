@@ -462,7 +462,7 @@ def run_7z_pack(seven_zip: str, temp_dir: str, output_path: str, volume_size: st
     return True
 
 
-# === 云端清单存档（用完后移到 Agent/rm）===
+# === 云端清单存档（用完后移到 sync-tools/rm）===
 
 def archive_cloud_manifest(manifest_path: str, archive_dir: str, timestamp: str):
     """将 manifest.json.xz 移入存档目录，同时从原位置删除（已不需要）。"""

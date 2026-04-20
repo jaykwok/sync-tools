@@ -95,7 +95,7 @@ def main():
     all_ok &= check("7-Zip", sz_ok,
                     seven_zip_path if sz_ok else "未找到，请安装: https://www.7-zip.org/")
 
-    # 5. sync_tools 脚本完整性
+    # 5. sync-tools 脚本完整性
     for script in ("sync_common.py", "generate_manifest.py", "build_sync_package.py"):
         exists = (SYNC_TOOLS / script).exists()
         all_ok &= check(f"脚本: {script}", exists)

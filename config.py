@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-# sync_tools 目录
+# sync-tools 目录
 SYNC_TOOLS_DIR = Path(__file__).resolve().parent
 
 
