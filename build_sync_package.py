@@ -433,6 +433,7 @@ set "ROOT=%~dp0.."
 for %%I in ("%ROOT%") do set "ROOT=%%~fI"
 set "PYTHON=%ROOT%\\.venv\\Scripts\\python.exe"
 if not exist "%PYTHON%" set "PYTHON=python"
+cd /d "%ROOT%"
 "%PYTHON%" "%APPLY_DIR%\\apply_sync.py" "%ROOT%"
 pause
 endlocal
