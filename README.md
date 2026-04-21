@@ -144,9 +144,6 @@ REM 例如：
 # Python 虚拟环境路径（相对于根目录，或绝对路径）
 VENV_PYTHON=.venv/Scripts/python.exe
 
-# 临时打包目录
-TEMP_DIR=sync-tools/temp
-
 # 软删除目录
 RM_DIR=sync-tools/rm
 
@@ -168,8 +165,9 @@ SEVEN_ZIP_EXTRA=C:/Program Files/7-Zip/7z.exe,C:/Program Files (x86)/7-Zip/7z.ex
 
 ```
 dir:.venv           # 忽略名为 .venv 的目录（任意层级）
-dir:sync-tools      # 忽略 sync-tools 目录（含 temp/rm/file_history）
+dir:sync-tools      # 忽略 sync-tools 目录（含 rm/ 及 file_history/）
 file:*manifest*.json.xz
+file:*.7z*
 file:*.log
 file:Thumbs.db
 ```
@@ -180,16 +178,16 @@ file:Thumbs.db
 
 ```bat
 REM 云端生成清单（带 xxhash）
-python sync-tools\generate_manifest.py . --hash
+python sync-tools\core\generate\generate_manifest.py . --hash
 
 REM 本机 dry-run（只看差异，不打包）
-.venv\Scripts\python.exe sync-tools\build_sync_package.py . manifest.json.xz --dry-run
+.venv\Scripts\python.exe sync-tools\core\pack\build_sync_package.py . manifest.json.xz --dry-run
 
 REM 本机打包（500m 分卷）
-.venv\Scripts\python.exe sync-tools\build_sync_package.py . manifest.json.xz --volume-size 500m
+.venv\Scripts\python.exe sync-tools\core\pack\build_sync_package.py . manifest.json.xz --volume-size 500m
 
 REM 本机打包（带 hash 二次校验）
-.venv\Scripts\python.exe sync-tools\build_sync_package.py . manifest.json.xz --hash-check
+.venv\Scripts\python.exe sync-tools\core\pack\build_sync_package.py . manifest.json.xz --hash-check
 ```
 
 ### generate_manifest.py 参数
@@ -217,29 +215,38 @@ REM 本机打包（带 hash 二次校验）
 
 ```
 <项目根>/
-├── .syncignore               ← 忽略规则（从 .syncignore.example 复制过来修改）
+├── .syncignore               ← 忽略规则（从 .syncignore.example 复制到根目录）
 └── sync-tools/               ← 本仓库
     ├── .env                  ← 本地路径配置（不提交 git，从 .env.example 复制）
     ├── .env.example          ← 配置模板
     ├── .syncignore.example   ← 忽略规则模板
     ├── .gitignore
-    ├── manifest.json.xz      ← 云端生成后拷到这里（打包后自动存档）
-    ├── sync_<时间戳>.7z      ← 本机生成的增量包（上传后可删除）
-    ├── temp/                 ← 打包临时目录（自动清理，不提交 git）
-    ├── rm/                   ← 软删除目录（不提交 git）
-    ├── file_history/         ← 历史清单存档（不提交 git）
-    │   └── manifests/
-    │       └── cloud_manifest_<时间戳>.json.xz
-    ├── sync_common.py        ← 公共库（扫描、hash、忽略规则）
     ├── config.py             ← 配置加载（读取 .env）
-    ├── generate_manifest.py  ← 云端扫描脚本（命令行）
-    ├── run_generate.py       ← 云端交互脚本（bat 调用）
-    ├── build_sync_package.py ← 本机打包脚本（命令行）
-    ├── run_build.py          ← 本机交互脚本（bat 调用）
-    ├── setup_sync.py         ← 部署检测脚本
+    ├── setup_sync.py         ← 部署检测
+    ├── core/                 ← 核心模块
+    │   ├── apply/            增量同步清理脚本
+    │   │   ├── apply_sync.py
+    │   │   └── apply_sync.bat
+    │   ├── build/             本机打包交互脚本
+    │   │   └── run_build.py
+    │   ├── generate/          云端清单生成
+    │   │   ├── generate_manifest.py   命令行版
+    │   │   └── run_generate.py        交互版（bat 调用）
+    │   ├── pack/              打包逻辑
+    │   │   └── build_sync_package.py
+    │   └── sync/              公共工具库（扫描/hash/忽略规则/7z检测/清单读写）
+    │       └── sync_common.py
+    ├── 本机打包.bat           ← 双击运行
     ├── 云端生成清单.bat
-    ├── 本机打包.bat
     └── README.md
+
+<项目根>/                          ← 运行时目录（由脚本自动创建，不提交 git）
+├── .venv/                    ← Python 虚拟环境
+├── sync-tools/
+│   ├── rm/                   ← 软删除目录
+│   └── file_history/         ← 历史清单存档
+│       └── manifests/        ← 云端 manifest 存档
+└── ... 其他项目文件 ...
 ```
 
 解压后的增量包结构（供参考）：
@@ -247,7 +254,7 @@ REM 本机打包（带 hash 二次校验）
 ```
 <解压目录>/
 ├── ... 差异文件（直接覆盖到项目根）...
-└── _apply_sync/              ← 仅在有待删除文件时存在
+└── _apply_sync/              ← 仅在有待删除文件/目录时存在
     ├── apply_sync.bat        ← 双击执行，完成后整个文件夹自动删除
     ├── apply_sync.py
     ├── delete_list.txt

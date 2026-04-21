@@ -2,65 +2,23 @@
 
 import argparse
 import json
-import lzma
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sync_common import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from core.sync.sync_common import (
     scan_directory, parse_mtime,
     compute_hash, human_readable_size,
+    find_7z, load_cloud_manifest,
 )
-from config import SEVEN_ZIP_EXTRA, TEMP_DIR, FILE_DIR, MANIFESTS_DIR, RM_DIR
-
-# === 7-Zip 检测 ===
-
-SEVEN_ZIP_CANDIDATES = ["7z"] + SEVEN_ZIP_EXTRA
-
-
-def find_7z() -> str | None:
-    for candidate in SEVEN_ZIP_CANDIDATES:
-        try:
-            result = subprocess.run(
-                [candidate, "--help"],
-                capture_output=True, timeout=5
-            )
-            if result.returncode == 0:
-                return candidate
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    return None
-
-
-# === 云端清单读取（支持 .xz 压缩版）===
-
-def load_cloud_manifest(manifest_path: str) -> dict:
-    if manifest_path.endswith(".xz"):
-        with lzma.open(manifest_path, "rb") as f:
-            raw = f.read()
-        # strip UTF-8 BOM if present
-        if raw.startswith(b"\xef\xbb\xbf"):
-            raw = raw[3:]
-        data = json.loads(raw.decode("utf-8"))
-    else:
-        with open(manifest_path, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-
-    if "files" not in data:
-        raise ValueError("manifest 缺少 'files' 字段")
-    for i, entry in enumerate(data["files"]):
-        for key in ("path", "size", "mtime"):
-            if key not in entry:
-                raise ValueError(f"manifest files[{i}] 缺少 '{key}' 字段")
-    return data
-
-
-# === 差异比对 ===
-
-MTIME_TOLERANCE_SECONDS = 2.0
+from config import (
+    SEVEN_ZIP_EXTRA, FILE_DIR, MANIFESTS_DIR, RM_DIR, SYNC_TOOLS_DIR,
+    APPLY_SYNC_SCRIPT, APPLY_SYNC_BAT, MTIME_TOLERANCE_SECONDS, DEFAULT_VOLUME_SIZE,
+)
 
 
 def compare_files(local_files: list, cloud_manifest: dict,
@@ -193,8 +151,7 @@ APPLY_SYNC_SUBDIR = "_apply_sync"
 
 
 def write_sync_manifest(temp_dir: str, local_dir: str, diff_result: dict, hash_check: bool):
-    from sync_common import init_ignore_rules
-    from config import RM_DIR
+    from core.sync.sync_common import init_ignore_rules
     ignore_dirs, ignore_files = init_ignore_rules(local_dir)
     all_diff = diff_result["new_files"] + diff_result["updated_files"]
     total_size = sum(f["size"] for f in all_diff)
@@ -235,220 +192,13 @@ def write_delete_list(temp_dir: str, deleted_files: list, deleted_dirs: list):
                 f.write(d + "\n")
 
 
-# === apply_sync.py 脚本写入 ===
-
-APPLY_SYNC_SCRIPT = r'''
-"""
-云端增量同步清理脚本
-将 delete_list.txt 中的文件/目录移动到 sync-tools/rm/，完成后自删 _apply_sync 文件夹。
-由 apply_sync.bat 自动调用，无需手动传参。
-"""
-import os
-import shutil
-import sys
-from datetime import datetime
-from pathlib import Path
-
-
-def parse_delete_list(path: str) -> tuple[list[str], list[str]]:
-    files, dirs = [], []
-    section = None
-    with open(path, "r", encoding="utf-8") as f:
-        for raw in f:
-            line = raw.strip()
-            if not line:
-                continue
-            if line == "[files]":
-                section = "files"
-            elif line == "[dirs]":
-                section = "dirs"
-            elif section == "files":
-                files.append(line)
-            elif section == "dirs":
-                dirs.append(line)
-            else:
-                files.append(line)   # 兼容旧格式（无 section 头）
-    return files, dirs
-
-
-def main():
-    # 本脚本在 _apply_sync/ 子目录内，项目根是其父目录
-    script_dir = Path(__file__).resolve().parent
-    project_root = script_dir.parent
-
-    # bat 可传入显式 project_root 覆盖
-    if len(sys.argv) >= 2:
-        project_root = Path(sys.argv[1]).resolve()
-
-    delete_list_path = script_dir / "delete_list.txt"
-
-    try:
-        from rich.console import Console
-        from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, MofNCompleteColumn, TimeElapsedColumn
-        from rich.panel import Panel
-        USE_RICH = True
-    except ImportError:
-        USE_RICH = False
-
-    if USE_RICH:
-        console = Console()
-        console.print(f"\n[bold cyan]云端同步清理[/bold cyan]  项目: {project_root}\n")
-    else:
-        print(f"\n云端同步清理  项目: {project_root}\n")
-
-    if not delete_list_path.exists():
-        msg = "无 delete_list.txt，无需清理。"
-        (console.print(f"[green]{msg}[/green]") if USE_RICH else print(msg))
-        _self_clean(script_dir, USE_RICH)
-        return
-
-    del_files, del_dirs = parse_delete_list(str(delete_list_path))
-
-    rm_base_path: Path | None = None
-    sync_manifest_path = script_dir / "sync_manifest.json"
-    if sync_manifest_path.exists():
-        try:
-            import json as _json
-            meta = _json.loads(sync_manifest_path.read_text(encoding="utf-8-sig"))
-            rm_dir_str = meta.get("rm_dir")
-            if rm_dir_str:
-                rm_base_path = Path(rm_dir_str)
-        except Exception:
-            pass
-    if rm_base_path is None:
-        rm_base_path = project_root / "sync-tools" / "rm"
-    rm_base = rm_base_path / ("sync_delete_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
-    rm_base.mkdir(parents=True, exist_ok=True)
-
-    file_moved = file_skipped = dir_moved = dir_skipped = 0
-
-    # ── 移动文件 ──────────────────────────────────────────────────
-    if del_files:
-        if USE_RICH:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(bar_width=35),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                console=console, transient=True,
-            ) as prog:
-                task = prog.add_task("移动文件...", total=len(del_files))
-                for rel in del_files:
-                    src = project_root / Path(rel.replace("/", os.sep))
-                    prog.update(task, description=rel[-50:] if len(rel) > 50 else rel)
-                    if src.exists():
-                        dst = rm_base / Path(rel.replace("/", os.sep))
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(src), str(dst))
-                        file_moved += 1
-                    else:
-                        file_skipped += 1
-                    prog.update(task, advance=1)
-        else:
-            for rel in del_files:
-                src = project_root / Path(rel.replace("/", os.sep))
-                if src.exists():
-                    dst = rm_base / Path(rel.replace("/", os.sep))
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(src), str(dst))
-                    file_moved += 1
-                    print(f"  [文件] 已移动: {rel}")
-                else:
-                    file_skipped += 1
-
-    # ── 移动目录（深度优先，rev=True 已保证子目录在前）────────────
-    if del_dirs:
-        if USE_RICH:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(bar_width=35),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                console=console, transient=True,
-            ) as prog:
-                task = prog.add_task("移动目录...", total=len(del_dirs))
-                for rel in del_dirs:
-                    src = project_root / Path(rel.replace("/", os.sep))
-                    prog.update(task, description=rel[-50:] if len(rel) > 50 else rel)
-                    if src.exists() and src.is_dir():
-                        dst = rm_base / Path(rel.replace("/", os.sep))
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(src), str(dst))
-                        dir_moved += 1
-                    else:
-                        dir_skipped += 1
-                    prog.update(task, advance=1)
-        else:
-            for rel in del_dirs:
-                src = project_root / Path(rel.replace("/", os.sep))
-                if src.exists() and src.is_dir():
-                    dst = rm_base / Path(rel.replace("/", os.sep))
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(src), str(dst))
-                    dir_moved += 1
-                    print(f"  [目录] 已移动: {rel}")
-                else:
-                    dir_skipped += 1
-
-    summary = (
-        f"文件: 移动 {file_moved} / 跳过 {file_skipped}  "
-        f"目录: 移动 {dir_moved} / 跳过 {dir_skipped}\n"
-        f"移动目标: {rm_base}"
-    )
-    if USE_RICH:
-        console.print(Panel(f"[green]清理完成[/green]\n\n{summary}", border_style="green"))
-    else:
-        print(f"\n清理完成\n{summary}")
-
-    _self_clean(script_dir, USE_RICH)
-
-
-def _self_clean(script_dir: Path, use_rich: bool):
-    """删除整个 _apply_sync 文件夹"""
-    try:
-        shutil.rmtree(str(script_dir))
-        msg = f"已自动清理: {script_dir.name}/"
-    except OSError as e:
-        msg = f"清理失败: {e}"
-    if use_rich:
-        from rich.console import Console
-        Console().print(f"[dim]{msg}[/dim]")
-    else:
-        print(msg)
-
-
-if __name__ == "__main__":
-    main()
-'''
-
-APPLY_SYNC_BAT = """\
-@echo off
-chcp 65001 >nul
-setlocal
-set "APPLY_DIR=%~dp0"
-set "APPLY_DIR=%APPLY_DIR:~0,-1%"
-set "ROOT=%~dp0.."
-for %%I in ("%ROOT%") do set "ROOT=%%~fI"
-set "PYTHON=%ROOT%\\.venv\\Scripts\\python.exe"
-if not exist "%PYTHON%" set "PYTHON=python"
-cd /d "%ROOT%"
-"%PYTHON%" "%APPLY_DIR%\\apply_sync.py" "%ROOT%"
-pause
-endlocal
-"""
-
+# === apply_sync.py 嵌入 ===
 
 def embed_apply_sync(temp_dir: str):
     meta_dir = os.path.join(temp_dir, APPLY_SYNC_SUBDIR)
     os.makedirs(meta_dir, exist_ok=True)
-    py_path = os.path.join(meta_dir, "apply_sync.py")
-    with open(py_path, "w", encoding="utf-8") as f:
-        f.write(APPLY_SYNC_SCRIPT)
-    bat_path = os.path.join(meta_dir, "apply_sync.bat")
-    with open(bat_path, "w", encoding="ascii") as f:
-        f.write(APPLY_SYNC_BAT)
+    shutil.copy2(str(APPLY_SYNC_SCRIPT), os.path.join(meta_dir, "apply_sync.py"))
+    shutil.copy2(str(APPLY_SYNC_BAT),    os.path.join(meta_dir, "apply_sync.bat"))
 
 
 # === 7z 打包（内容平铺，无多余根目录）===
@@ -456,7 +206,7 @@ def embed_apply_sync(temp_dir: str):
 def run_7z_pack(seven_zip: str, temp_dir: str, output_path: str, volume_size: str) -> bool:
     cmd = [
         seven_zip, "a", "-t7z", "-r",
-        "-y",               # 自动确认所有提示，不阻塞终端
+        "-y",
         f"-v{volume_size}",
         output_path,
         ".",
@@ -471,7 +221,6 @@ def run_7z_pack(seven_zip: str, temp_dir: str, output_path: str, volume_size: st
 # === 云端清单存档（用完后移到 sync-tools/rm）===
 
 def archive_cloud_manifest(manifest_path: str, archive_dir: str, timestamp: str):
-    """将 manifest.json.xz 移入存档目录，同时从原位置删除（已不需要）。"""
     os.makedirs(archive_dir, exist_ok=True)
     dst = os.path.join(archive_dir, f"cloud_manifest_{timestamp}.json.xz")
     if manifest_path.endswith(".xz") and os.path.exists(manifest_path):
@@ -498,8 +247,8 @@ def main():
     parser.add_argument("manifest", help="云端 manifest.json 或 manifest.json.xz 文件路径")
     parser.add_argument("--hash-check", action="store_true",
                         help="对疑似差异文件做哈希验证（使用云端清单中记录的算法）")
-    parser.add_argument("--volume-size", default="1g",
-                        help="分卷阈值（默认 1g），如 500m, 1g, 2g")
+    parser.add_argument("--volume-size", default=DEFAULT_VOLUME_SIZE,
+                        help=f"分卷阈值（默认 {DEFAULT_VOLUME_SIZE}），如 500m, 1g, 2g")
     parser.add_argument("--dry-run", action="store_true",
                         help="只生成差异报告，不复制文件、不打包")
     parser.add_argument("--keep-temp", action="store_true",
@@ -511,15 +260,15 @@ def main():
     volume_size_bytes = parse_volume_size(args.volume_size)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    temp_dir           = str(TEMP_DIR / f"sync_{timestamp}")
-    file_dir           = str(FILE_DIR)
-    report_dir         = str(FILE_DIR / "reports")
+    temp_dir             = tempfile.mkdtemp(prefix="sync_")
+    file_dir            = str(FILE_DIR)
+    report_dir          = str(FILE_DIR / "reports")
     manifest_archive_dir = str(MANIFESTS_DIR)
 
     # Step 1: 检测 7z
     seven_zip = None
     if not args.dry_run:
-        seven_zip = find_7z()
+        seven_zip = find_7z(SEVEN_ZIP_EXTRA)
         if seven_zip is None:
             print("错误：未找到 7-Zip 命令行工具。", file=sys.stderr)
             print("请安装 7-Zip: https://www.7-zip.org/", file=sys.stderr)
@@ -590,15 +339,13 @@ def main():
         if copy_errors:
             print(f"  复制错误: {len(copy_errors)} 个文件跳过")
 
-    # Step 9: 包内元数据
-    write_sync_manifest(temp_dir, local_dir, diff_result, args.hash_check)
-
-    # Step 10: 写入 delete_list.txt 和 apply_sync 套件
+    # Step 9: 有删除时写入 _apply_sync/ 套件
     if has_deletes:
         del_dirs = diff_result.get("deleted_dirs", [])
+        write_sync_manifest(temp_dir, local_dir, diff_result, args.hash_check)
         write_delete_list(temp_dir, diff_result["deleted_files"], del_dirs)
+        embed_apply_sync(temp_dir)
         print(f"  delete_list.txt: {len(diff_result['deleted_files'])} 个文件，{len(del_dirs)} 个目录")
-    embed_apply_sync(temp_dir)
 
     # Step 11: 7z 打包
     output_7z = os.path.join(file_dir, f"sync_{timestamp}.7z")

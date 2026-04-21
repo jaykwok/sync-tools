@@ -9,8 +9,8 @@ from tkinter import filedialog
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sync_common import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from core.sync.sync_common import (
     scan_directory,
     default_hash_algo,
     human_readable_size,
@@ -18,11 +18,11 @@ from sync_common import (
     should_ignore_dir,
     should_ignore_file,
     init_ignore_rules,
+    ask,
 )
 from config import ROOT, SYNC_TOOLS_DIR
 
 from rich.console import Console
-
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -38,17 +38,6 @@ from rich.progress import (
 from rich.panel import Panel
 
 console = Console()
-
-
-def ask(prompt: str, choices: list[str], default: str) -> str:
-    opts = "/".join(c.upper() if c == default else c for c in choices)
-    while True:
-        ans = input(f"{prompt} [{opts}]: ").strip().lower()
-        if ans == "":
-            return default
-        if ans in choices:
-            return ans
-        console.print(f"  [yellow]请输入 {' 或 '.join(choices)}[/yellow]")
 
 
 def count_files(root: Path) -> tuple[int, int]:
@@ -128,7 +117,6 @@ def main():
     current_file = ""
 
     if use_hash:
-        # 按字节进度（含速度、ETA）
         progress_cols = [
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -141,7 +129,6 @@ def main():
             TimeElapsedColumn(),
         ]
     else:
-        # 按文件数进度
         progress_cols = [
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -226,7 +213,7 @@ def main():
             f"[green]扫描完成[/green]  {len(file_list)} 个文件"
             + (f"，[yellow]{len(errors)} 个错误[/yellow]" if errors else "")
             + "\n\n"
-            f"[bold cyan]manifest.json.xz[/bold cyan]  {orig_kb:.0f} KB → {xz_kb:.0f} KB\n\n"
+            f"[bold cyan]manifest.json.xz[/bold cyan]  {orig_kb:.0f} KB -> {xz_kb:.0f} KB\n\n"
             f"[bold]文件位置（直接拷贝）:[/bold]\n  [cyan]{xz_path}[/cyan]",
             title="完成",
             border_style="green",

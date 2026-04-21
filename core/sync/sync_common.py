@@ -1,9 +1,13 @@
-"""公共工具库：忽略规则、路径归一化、文件 hash、目录扫描。"""
+"""公共工具库：忽略规则、路径归一化、文件 hash、目录扫描、7z 检测、云端清单加载、交互询问。"""
+
 import fnmatch
 import hashlib
+import json
+import lzma
 import os
+import subprocess
+import sys
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable
 
 try:
@@ -24,9 +28,14 @@ def load_syncignore(root_dir: str) -> tuple[list[str], list[str]]:
 
     syncignore_path = os.path.join(root_dir, ".syncignore")
     if not os.path.exists(syncignore_path):
-        # 内置默认值（与 .syncignore 模板一致）
-        ignore_dirs = [".venv", ".claude", "sync-tools/temp", "sync-tools/rm", "sync-tools/file_history", "__pycache__"]
-        ignore_files = ["*.log", "*.pyc", "Thumbs.db", "desktop.ini", "*manifest*.json.xz"]
+        ignore_dirs = [
+            ".venv", ".git", ".claude", "node_modules", "__pycache__",
+            "sync-tools/rm", "sync-tools/file_history",
+        ]
+        ignore_files = [
+            "*.log", "*.pyc", "*.tmp", "Thumbs.db", "desktop.ini",
+            "*manifest*.json.xz", "*.7z*",
+        ]
         return ignore_dirs, ignore_files
 
     with open(syncignore_path, "r", encoding="utf-8") as f:
@@ -42,11 +51,10 @@ def load_syncignore(root_dir: str) -> tuple[list[str], list[str]]:
                 val = line[5:].strip()
                 if val:
                     ignore_files.append(val)
-
     return ignore_dirs, ignore_files
 
 
-# ── 全局缓存（避免每次 should_ignore_* 调用都重新 I/O）──────────
+# ── 全局缓存 ─────────────────────────────────────────────────────
 
 _cached_root: str | None = None
 _cached_ignore_dirs: list[str] = []
@@ -63,15 +71,18 @@ def init_ignore_rules(root_dir: str) -> tuple[list[str], list[str]]:
     return _cached_ignore_dirs, _cached_ignore_files
 
 
+# ── 路径归一化 ───────────────────────────────────────────────────
+
 def normalize_path(path: str) -> str:
     return path.replace("\\", "/")
 
+
+# ── 忽略判断（内部用，接收已加载的规则列表）─────────────────────
 
 def _should_ignore_dir(rel_dir: str, ignore_dirs: list[str]) -> bool:
     normalized = normalize_path(rel_dir).strip("/")
     if not normalized:
         return False
-    # 大小写不敏感，兼容 Windows 文件系统（如 Agent / AGENT / agent 均视为相同）
     parts = [p.lower() for p in normalized.split("/")]
     for ignored in ignore_dirs:
         ignored_parts = [p.lower() for p in normalize_path(ignored).strip("/").split("/")]
@@ -79,7 +90,7 @@ def _should_ignore_dir(rel_dir: str, ignore_dirs: list[str]) -> bool:
             return True
         if len(ignored_parts) == 1 and ignored_parts[0] in parts:
             return True
-        if len(ignored_parts) > 1 and parts[:len(ignored_parts)] == ignored_parts:
+        if len(ignored_parts) > 1 and parts[: len(ignored_parts)] == ignored_parts:
             return True
     return False
 
@@ -88,11 +99,15 @@ def _should_ignore_file(filename: str, ignore_files: list[str]) -> bool:
     return any(fnmatch.fnmatch(filename.lower(), p.lower()) for p in ignore_files)
 
 
-# 便捷包装（供外部代码直接调用，使用已缓存规则）
 def should_ignore_dir(rel_dir: str) -> bool:
+    if not _cached_ignore_dirs:
+        return False
     return _should_ignore_dir(rel_dir, _cached_ignore_dirs)
 
+
 def should_ignore_file(filename: str) -> bool:
+    if not _cached_ignore_files:
+        return False
     return _should_ignore_file(filename, _cached_ignore_files)
 
 
@@ -106,8 +121,9 @@ def parse_mtime(iso_str: str) -> float:
     return datetime.fromisoformat(iso_str).timestamp()
 
 
-def compute_hash(filepath: str, algo: str = "xxh3_64",
-                 on_bytes: Callable[[int], None] | None = None) -> str:
+def compute_hash(
+    filepath: str, algo: str = "xxh3_64", on_bytes: Callable[[int], None] | None = None
+) -> str:
     if algo == "xxh3_64" and _XXHASH_AVAILABLE:
         h = _xxhash.xxh3_64()
     elif algo == "xxh128" and _XXHASH_AVAILABLE:
@@ -136,18 +152,20 @@ def human_readable_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
-# ── 扫描 ──────────────────────────────────────────────────────────
+# ── 目录扫描 ─────────────────────────────────────────────────────
 
 def quick_scan(root_dir: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """快速扫描：不计算 hash。"""
     return scan_directory(root_dir, enable_hash=False)
 
 
-def scan_directory(root_dir: str, enable_hash: bool = False,
-                   hash_algo: str | None = None,
-                   on_file: Callable[[str, int], None] | None = None,
-                   on_bytes: Callable[[int], None] | None = None,
-                   progress=None) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+def scan_directory(
+    root_dir: str,
+    enable_hash: bool = False,
+    hash_algo: str | None = None,
+    on_file: Callable[[str, int], None] | None = None,
+    on_bytes: Callable[[int], None] | None = None,
+    progress=None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     if hash_algo is None:
         hash_algo = default_hash_algo()
 
@@ -196,3 +214,57 @@ def scan_directory(root_dir: str, enable_hash: bool = False,
 
     files.sort(key=lambda x: x["path"])
     return files, errors
+
+
+# ── 交互询问 ─────────────────────────────────────────────────────
+
+def ask(prompt: str, choices: list[str], default: str) -> str:
+    """显示 prompt 并等待用户输入，支持回车默认选项。"""
+    opts = "/".join(c.upper() if c == default else c for c in choices)
+    while True:
+        sys.stdout.write(f"{prompt} [{opts}]: ")
+        sys.stdout.flush()
+        ans = sys.stdin.readline().strip().lower()
+        if ans == "":
+            return default
+        if ans in choices:
+            return ans
+        print(f"  请输入 {' 或 '.join(choices)}", flush=True)
+
+
+# ── 7-Zip 检测 ───────────────────────────────────────────────────
+
+def find_7z(extra_paths: list[str] | None = None) -> str | None:
+    """查找 7z 可执行文件路径，优先用 extra_paths，再沿 PATH。"""
+    candidates = (extra_paths or []) + ["7z"]
+    for candidate in candidates:
+        try:
+            r = subprocess.run([candidate, "--help"], capture_output=True, timeout=5)
+            if r.returncode == 0:
+                return candidate
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+# ── 云端清单读取（支持 .xz 压缩版）───────────────────────────────
+
+def load_cloud_manifest(manifest_path: str) -> dict:
+    """读取 manifest.json 或 manifest.json.xz，返回 dict。"""
+    if manifest_path.endswith(".xz"):
+        with lzma.open(manifest_path, "rb") as f:
+            raw = f.read()
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        data = json.loads(raw.decode("utf-8"))
+    else:
+        with open(manifest_path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+
+    if "files" not in data:
+        raise ValueError("manifest 缺少 'files' 字段")
+    for i, entry in enumerate(data["files"]):
+        for key in ("path", "size", "mtime"):
+            if key not in entry:
+                raise ValueError(f"manifest files[{i}] 缺少 '{key}' 字段")
+    return data
