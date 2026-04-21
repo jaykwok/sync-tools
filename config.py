@@ -27,7 +27,6 @@ _env = _load_env()
 
 
 def _path(key: str, default: str) -> Path:
-    """读取配置中的路径值，若是相对路径则以 ROOT 为基础解析。"""
     raw = _env.get(key, default)
     p = Path(raw.replace("\\", "/"))
     return p if p.is_absolute() else ROOT / p
@@ -37,18 +36,7 @@ def _path(key: str, default: str) -> Path:
 if "ROOT" in _env:
     ROOT: Path = Path(_env["ROOT"].replace("\\", "/"))
 else:
-    ROOT = SYNC_TOOLS_DIR.parents[0]   # sync-tools -> 项目根
-
-# ── Python 可执行文件 ─────────────────────────────────────────────
-VENV_PYTHON: Path = _path("VENV_PYTHON", ".venv/Scripts/python.exe")
-
-# ── 项目目录 ──────────────────────────────────────────────────────
-TEMP_DIR:      Path = _path("TEMP_DIR",      "sync-tools/temp")
-RM_DIR:        Path = _path("RM_DIR",        "sync-tools/rm")
-FILE_DIR:      Path = _path("FILE_DIR",      "sync-tools/file_history")
-
-_manifests_sub = _env.get("MANIFESTS_SUBDIR", "manifests")
-MANIFESTS_DIR: Path = FILE_DIR / _manifests_sub
+    ROOT = SYNC_TOOLS_DIR.parent   # sync-tools -> 项目根
 
 # ── 7-Zip ─────────────────────────────────────────────────────────
 _default_7z = r"C:\Program Files\7-Zip\7z.exe,C:\Program Files (x86)\7-Zip\7z.exe"
@@ -57,3 +45,27 @@ SEVEN_ZIP_EXTRA: list[str] = [
     for s in _env.get("SEVEN_ZIP_EXTRA", _default_7z).split(",")
     if s.strip()
 ]
+
+# ── 项目目录 ──────────────────────────────────────────────────────
+RM_DIR:        Path = _path("RM_DIR",        "sync-tools/rm")
+FILE_DIR:      Path = _path("FILE_DIR",      "sync-tools/file_history")
+
+_manifests_sub = _env.get("MANIFESTS_SUBDIR", "manifests")
+MANIFESTS_DIR: Path = FILE_DIR / _manifests_sub
+
+# ── 核心脚本清单 ───────────────────────────────────────────────────
+SCRIPTS: list[str] = [
+    "config.py", "setup_sync.py",
+    "core/sync/sync_common.py",
+    "core/pack/build_sync_package.py",
+    "core/build/run_build.py",
+    "core/generate/generate_manifest.py",
+    "core/generate/run_generate.py",
+]
+
+# ── 运行时常量 ─────────────────────────────────────────────────────
+APPLY_SYNC_SCRIPT: Path = SYNC_TOOLS_DIR / "core" / "apply" / "apply_sync.py"
+APPLY_SYNC_BAT:    Path = SYNC_TOOLS_DIR / "core" / "apply" / "apply_sync.bat"
+MTIME_TOLERANCE_SECONDS: float = 2.0
+DEFAULT_VOLUME_SIZE: str = "1g"
+VOLUME_PADDING_MB: int = 64

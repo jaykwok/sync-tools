@@ -11,16 +11,48 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import ROOT, VENV_PYTHON, SEVEN_ZIP_EXTRA, TEMP_DIR, FILE_DIR, RM_DIR
+from config import ROOT, SEVEN_ZIP_EXTRA, SYNC_TOOLS_DIR, SCRIPTS, FILE_DIR, RM_DIR
 
-SYNC_TOOLS = Path(__file__).resolve().parent
+VENV_PYTHON: Path = ROOT / ".venv" / "Scripts" / "python.exe"
 
 
-def check(label: str, ok: bool, detail: str = ""):
+def check(label: str, ok: bool, detail: str = "") -> bool:
     status = "OK  " if ok else "FAIL"
     suffix = f"  ({detail})" if detail else ""
     print(f"  [{status}] {label}{suffix}")
     return ok
+
+
+def try_install(pkg: str) -> tuple[bool, str]:
+    """尝试 import，失败则安装，返回 (ok, version_str)。"""
+    import importlib
+    import importlib.metadata
+    try:
+        mod = importlib.import_module(pkg)
+        ver = getattr(mod, "VERSION", None) or getattr(mod, "__version__", None)
+        if ver is None:
+            ver = importlib.metadata.version(pkg)
+        return True, str(ver)
+    except ImportError:
+        pass
+    if not VENV_PYTHON.exists():
+        return False, "未安装"
+    print(f"  → 正在安装 {pkg} ...")
+    r = subprocess.run(
+        [str(VENV_PYTHON), "-m", "pip", "install", pkg, "-q"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        print(f"  安装失败: {r.stderr.strip()}")
+        return False, "安装失败"
+    try:
+        mod = importlib.import_module(pkg)
+        ver = getattr(mod, "VERSION", None) or getattr(mod, "__version__", None)
+        if ver is None:
+            ver = importlib.metadata.version(pkg)
+        return True, str(ver)
+    except ImportError:
+        return False, "安装后仍无法导入"
 
 
 def main():
@@ -39,38 +71,6 @@ def main():
     venv_ok = VENV_PYTHON.exists()
     all_ok &= check(".venv Python", venv_ok, str(VENV_PYTHON))
 
-    def try_install(pkg: str) -> tuple[bool, str]:
-        """尝试 import，失败则安装，返回 (ok, version_str)。"""
-        import importlib
-        try:
-            mod = importlib.import_module(pkg)
-            ver = getattr(mod, "VERSION", None) or getattr(mod, "__version__", None)
-            if ver is None:
-                import importlib.metadata
-                ver = importlib.metadata.version(pkg)
-            return True, str(ver)
-        except ImportError:
-            pass
-        if not venv_ok:
-            return False, "未安装"
-        print(f"  → 正在安装 {pkg} ...")
-        r = subprocess.run(
-            [str(VENV_PYTHON), "-m", "pip", "install", pkg, "-q"],
-            capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            print(f"  安装失败: {r.stderr.strip()}")
-            return False, "安装失败"
-        try:
-            mod = importlib.import_module(pkg)
-            ver = getattr(mod, "VERSION", None) or getattr(mod, "__version__", None)
-            if ver is None:
-                import importlib.metadata
-                ver = importlib.metadata.version(pkg)
-            return True, str(ver)
-        except ImportError:
-            return False, "安装后仍无法导入"
-
     # 3. xxhash
     xxhash_ok, xxhash_ver = try_install("xxhash")
     all_ok &= check("xxhash", xxhash_ok, f"版本 {xxhash_ver}")
@@ -80,9 +80,9 @@ def main():
     all_ok &= check("rich", rich_ok, f"版本 {rich_ver}")
 
     # 5. 7-Zip
-    SEVEN_ZIP_CANDIDATES = ["7z"] + SEVEN_ZIP_EXTRA
+    candidates = ["7z"] + SEVEN_ZIP_EXTRA
     seven_zip_path = None
-    for candidate in SEVEN_ZIP_CANDIDATES:
+    for candidate in candidates:
         try:
             r = subprocess.run([candidate, "--help"], capture_output=True, timeout=5)
             if r.returncode == 0:
@@ -95,14 +95,13 @@ def main():
     all_ok &= check("7-Zip", sz_ok,
                     seven_zip_path if sz_ok else "未找到，请安装: https://www.7-zip.org/")
 
-    # 5. sync-tools 脚本完整性
-    for script in ("sync_common.py", "config.py", "generate_manifest.py", "run_generate.py",
-                   "build_sync_package.py", "run_build.py"):
-        exists = (SYNC_TOOLS / script).exists()
+    # 6. 核心脚本完整性
+    for script in SCRIPTS:
+        exists = (SYNC_TOOLS_DIR / script).exists()
         all_ok &= check(f"脚本: {script}", exists)
 
-    # 6. 工作目录结构
-    for path in (FILE_DIR, TEMP_DIR, RM_DIR):
+    # 7. 工作目录结构
+    for path in (FILE_DIR, RM_DIR):
         path.mkdir(parents=True, exist_ok=True)
         rel = path.relative_to(ROOT)
         all_ok &= check(f"目录: {rel}", path.exists())
@@ -115,8 +114,8 @@ def main():
 
     # === 打印使用命令 ===
     python = str(VENV_PYTHON)
-    gen = str(SYNC_TOOLS / "generate_manifest.py")
-    build = str(SYNC_TOOLS / "build_sync_package.py")
+    gen = str(SYNC_TOOLS_DIR / "core/generate/generate_manifest.py")
+    build = str(SYNC_TOOLS_DIR / "core/pack/build_sync_package.py")
     root_str = str(ROOT)
 
     print("=" * 60)
@@ -139,8 +138,8 @@ def main():
     print("【云端】解压增量包（在云端项目根目录运行）:")
     print(f'  7z x sync_<时间戳>.7z -o"{root_str}" -y')
     print()
-    print("【云端】处理删除列表（解压后，如包内含 delete_list.txt）:")
-    print(f'  python apply_sync.py . "{root_str}"')
+    print("【云端】处理删除列表（解压后，进入 _apply_sync/ 文件夹双击 apply_sync.bat）:")
+    print(f'  cd /d "{root_str}\\_apply_sync" && apply_sync.bat')
     print()
 
 

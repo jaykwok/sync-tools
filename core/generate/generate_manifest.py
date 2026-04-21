@@ -10,8 +10,8 @@ import os
 import sys
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sync_common import scan_directory, default_hash_algo
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from core.sync.sync_common import scan_directory, default_hash_algo
 
 
 def main():

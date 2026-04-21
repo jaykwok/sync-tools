@@ -5,22 +5,24 @@ import lzma
 import os
 import shutil
 import sys
+import tempfile
 import tkinter as tk
 from tkinter import filedialog
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sync_common import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from core.sync.sync_common import (
     scan_directory,
     parse_mtime,
     compute_hash,
     human_readable_size,
     quick_scan,
-)
-from build_sync_package import (
+    ask,
     find_7z,
     load_cloud_manifest,
+)
+from core.pack.build_sync_package import (
     compare_files,
     generate_reports,
     write_sync_manifest,
@@ -30,7 +32,7 @@ from build_sync_package import (
     archive_cloud_manifest,
     parse_volume_size,
 )
-from config import ROOT, TEMP_DIR, FILE_DIR, MANIFESTS_DIR, SYNC_TOOLS_DIR
+from config import ROOT, FILE_DIR, MANIFESTS_DIR, SYNC_TOOLS_DIR, SEVEN_ZIP_EXTRA, DEFAULT_VOLUME_SIZE, VOLUME_PADDING_MB
 
 from rich.console import Console
 from rich.progress import (
@@ -53,34 +55,29 @@ from rich import box
 console = Console()
 
 
-def ask(prompt: str, choices: list[str], default: str) -> str:
-    opts = "/".join(c.upper() if c == default else c for c in choices)
-    while True:
-        ans = input(f"{prompt} [{opts}]: ").strip().lower()
-        if ans == "":
-            return default
-        if ans in choices:
-            return ans
-        console.print(f"  [yellow]请输入 {' 或 '.join(choices)}[/yellow]")
-
-
 def scan_with_progress(root: Path) -> tuple:
     """快速扫描本地文件（不含 hash），带 rich 进度条。"""
-    # 先快速数文件数
-    from sync_common import normalize_path, should_ignore_dir, should_ignore_file
+    from core.sync.sync_common import normalize_path, init_ignore_rules, should_ignore_dir, should_ignore_file
 
-    total = sum(
-        1
-        for dp, dns, fns in os.walk(root)
-        for fn in fns
-        if not should_ignore_file(fn)
-        and not should_ignore_dir(
-            normalize_path(os.path.join(os.path.relpath(dp, root), fn)).rsplit("/", 1)[
-                0
-            ]
-            or ""
-        )
-    )
+    ignore_dirs, ignore_files = init_ignore_rules(str(root))
+
+    # 先快速数文件数（逻辑与 scan_directory 完全一致：先裁剪目录再过滤文件）
+    total = 0
+    for dp, dns, fns in os.walk(root):
+        rel_current = os.path.relpath(dp, root)
+        if rel_current == ".":
+            rel_current = ""
+        dns[:] = [
+            d
+            for d in dns
+            if not should_ignore_dir(
+                normalize_path(os.path.join(rel_current, d)) if rel_current else d,
+            )
+        ]
+        for fn in fns:
+            if should_ignore_file(fn):
+                continue
+            total += 1
 
     files_done = 0
     with Progress(
@@ -121,7 +118,7 @@ def copy_with_progress(diff_result: dict, local_dir: str, temp_dir: str) -> list
         TimeRemainingColumn(),
         TimeElapsedColumn(),
         console=console,
-        transient=True,  # 完成后整条进度条消失，不残留在屏幕上
+        transient=True,
     ) as prog:
         task = prog.add_task("复制差异文件...", total=total_bytes)
 
@@ -205,7 +202,7 @@ def main():
     console.print()
 
     # 检测 7z
-    seven_zip = find_7z()
+    seven_zip = find_7z(SEVEN_ZIP_EXTRA)
     if seven_zip is None:
         console.print("[red][错误] 未找到 7-Zip，请安装: https://www.7-zip.org/[/red]")
         return
@@ -274,10 +271,10 @@ def main():
         console.print("[green]两端完全一致，无需同步。[/green]")
         return
 
-    # 自动分卷：超过 1 GB 才分卷，否则单文件
-    ONE_GB = 1024**3
-    vol_str = "1g" if diff_size > ONE_GB else str(diff_size + 64 * 1024 * 1024)
-    do_split = diff_size > ONE_GB
+    # 自动分卷：超过 DEFAULT_VOLUME_SIZE 才分卷，否则单文件
+    _vol_threshold = parse_volume_size(DEFAULT_VOLUME_SIZE)
+    do_split = diff_size > _vol_threshold
+    vol_str = DEFAULT_VOLUME_SIZE if do_split else str(diff_size + VOLUME_PADDING_MB * 1024 * 1024)
     volume_size_bytes = parse_volume_size(vol_str)
 
     # 预览
@@ -309,7 +306,7 @@ def main():
             output_dir = Path(chosen)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    temp_dir = TEMP_DIR / f"sync_{timestamp}"
+    temp_dir = tempfile.mkdtemp(prefix="sync_")
     report_dir = FILE_DIR / "reports"
     manifest_archive_dir = MANIFESTS_DIR
 
@@ -328,19 +325,18 @@ def main():
 
     # 复制差异文件
     console.print()
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    copy_errors = copy_with_progress(diff, str(ROOT), str(temp_dir))
+    os.makedirs(temp_dir, exist_ok=True)
+    copy_errors = copy_with_progress(diff, str(ROOT), temp_dir)
     if copy_errors:
         console.print(f"  [yellow]复制错误: {len(copy_errors)} 个[/yellow]")
 
-    # 元数据
-    write_sync_manifest(str(temp_dir), str(ROOT), diff, False)
     has_deletes = del_n > 0 or del_dir_n > 0
     if has_deletes:
+        write_sync_manifest(temp_dir, str(ROOT), diff, False)
         write_delete_list(
-            str(temp_dir), diff["deleted_files"], diff.get("deleted_dirs", [])
+            temp_dir, diff["deleted_files"], diff.get("deleted_dirs", [])
         )
-    embed_apply_sync(str(temp_dir))
+        embed_apply_sync(temp_dir)
 
     # 7z 打包 —— 输出到用户选择的目录
     output_7z = str(output_dir / f"sync_{timestamp}.7z")
@@ -352,14 +348,14 @@ def main():
         console.print(
             f"\n[bold]7z 打包[/bold]（单文件，{human_readable_size(diff_size)}）..."
         )
-    ok = run_7z_pack(seven_zip, str(temp_dir), output_7z, vol_str)
+    ok = run_7z_pack(seven_zip, temp_dir, output_7z, vol_str)
     if not ok:
         console.print("[red][错误] 打包失败，临时目录已保留。[/red]")
         return
 
     # 清理：存档 manifest、删除临时目录、清理 reports
     archive_cloud_manifest(str(manifest_path), str(manifest_archive_dir), timestamp)
-    shutil.rmtree(str(temp_dir), ignore_errors=True)
+    shutil.rmtree(temp_dir, ignore_errors=True)
     if report_dir.exists():
         shutil.rmtree(str(report_dir), ignore_errors=True)
 
