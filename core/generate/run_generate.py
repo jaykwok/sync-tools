@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from core.sync.sync_common import (
     scan_directory,
     default_hash_algo,
+    hash_algo_display_name,
     human_readable_size,
     normalize_path,
     should_ignore_dir,
@@ -76,12 +77,9 @@ def main():
     )
     console.print()
 
-    use_hash = ask("启用 xxhash（更精确，大文件会慢一些）", ["y", "n"], "n") == "y"
-    hash_algo = default_hash_algo() if use_hash else None
-    mode_str = (
-        f"size + mtime + [green]{hash_algo}[/green]" if use_hash else "size + mtime"
-    )
-    console.print(f"  模式: {mode_str}\n")
+    use_hash = True
+    hash_algo = default_hash_algo()
+    console.print(f"  模式: size + mtime + [green]{hash_algo_display_name(hash_algo)}[/green]\n")
 
     console.print()
 
@@ -110,61 +108,43 @@ def main():
         f"合计 [cyan]{human_readable_size(total_bytes)}[/cyan]\n"
     )
 
-    # ── 阶段二：扫描（含 hash 时按字节更新）──────────────────────
+    # ── 阶段二：扫描（按字节更新进度）──────────────────────────────
     console.print("[bold]阶段 2/2  扫描目录...[/bold]")
 
     files_done = 0
     current_file = ""
 
-    if use_hash:
-        progress_cols = [
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(bar_width=30),
-            FileSizeColumn(),
-            TextColumn("/"),
-            TotalFileSizeColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
-            TimeElapsedColumn(),
-        ]
-    else:
-        progress_cols = [
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(bar_width=40),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        ]
+    progress_cols = [
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30),
+        FileSizeColumn(),
+        TextColumn("/"),
+        TotalFileSizeColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        TimeElapsedColumn(),
+    ]
 
     with Progress(*progress_cols, console=console) as prog:
-        if use_hash:
-            task = prog.add_task("扫描中...", total=total_bytes, completed=0)
-        else:
-            task = prog.add_task("扫描中...", total=total_files, completed=0)
+        task = prog.add_task("扫描中...", total=total_bytes, completed=0)
 
         def on_file(rel_path: str, size: int):
             nonlocal files_done, current_file
             files_done += 1
             current_file = rel_path
             short = rel_path if len(rel_path) <= 50 else "..." + rel_path[-47:]
-            if not use_hash:
-                prog.update(
-                    task, advance=1, description=f"[{files_done}/{total_files}] {short}"
-                )
-            else:
-                prog.update(task, description=f"[{files_done}/{total_files}] {short}")
+            prog.update(task, description=f"[{files_done}/{total_files}] {short}")
 
         def on_bytes(n: int):
             prog.update(task, advance=n)
 
         file_list, errors = scan_directory(
             str(ROOT),
-            enable_hash=use_hash,
+            enable_hash=True,
             hash_algo=hash_algo,
             on_file=on_file,
-            on_bytes=on_bytes if use_hash else None,
+            on_bytes=on_bytes,
         )
 
     console.print()
@@ -191,8 +171,8 @@ def main():
     manifest = {
         "generated_at": generated_at,
         "root_dir": str(ROOT),
-        "hash_enabled": use_hash,
-        "hash_algo": hash_algo if use_hash else None,
+        "hash_enabled": True,
+        "hash_algo": hash_algo,
         "file_count": len(file_list),
         "files": file_list,
     }

@@ -1,6 +1,6 @@
-# sync-tools — 手动增量同步工具
+# sync-tools — 手动同步工具
 
-在**无法建立网络直连**的场景下（如本机内网、云桌面无公网 IP），通过"生成差异包 → 手动上传 → 解压覆盖"实现增量同步。
+在**无法建立网络直连**的场景下（如本机内网、云桌面无公网 IP），通过"生成差异包 → 手动上传 → 解压覆盖"实现手动同步。支持默认的**完全镜像**模式，也支持只新增/更新的**增量更新**模式。
 
 适用于：两端都是 Windows、文件量大（含 Office / 二进制文件）、上传带宽有限、不能安装 rsync/VPN 的情况。
 
@@ -11,7 +11,7 @@
 ```
 云端：扫描目录 → manifest.json.xz  ──(拷贝到本机)──►
 本机：读清单 + 扫描本地 → 比对差异 → sync_<时间戳>.7z  ──(上传)──►
-云端：解压覆盖 + apply_sync.bat 处理删除
+云端：解压覆盖 + apply_sync.bat 处理删除/移动（镜像模式如有）
 ```
 
 比对逻辑：
@@ -21,7 +21,8 @@
 | 本机有、云端无 | 新增 |
 | size 或 mtime 不同 | 更新 |
 | 完全一致 | 跳过 |
-| 云端有、本机无 | 待删除（写入 `delete_list.txt`） |
+| 云端有、本机无 | 镜像模式下待删除（写入 `delete_list.txt`）；增量更新模式下保留 |
+| 路径变更、内容相同 | 镜像模式下记录为移动；增量更新模式下按新文件上传 |
 
 ---
 
@@ -52,9 +53,8 @@ REM 安装依赖
 .venv\Scripts\pip install xxhash rich
 ```
 
-> **云端注意**：云端只用于生成清单，同样需要创建 `.venv` 并安装 `xxhash rich`。
-> 如果云端无法访问 PyPI，可在本机安装后将整个 `.venv` 目录打包传过去，
-> 或用系统 Python 直接运行（跳过 `.venv`，在 `.env` 中将 `VENV_PYTHON` 改为 `python`）。
+> **云端注意**：云端生成清单和处理同步时同样使用 `.venv`，需要安装 `xxhash rich`。
+> 如果云端无法访问 PyPI，可在本机安装后将整个 `.venv` 目录打包传过去。
 
 ### 运行部署检测（可选）
 
@@ -92,14 +92,12 @@ copy sync-tools\.syncignore.example .syncignore
 
 在云端项目根目录，双击 `sync-tools\云端生成清单.bat`。
 
-脚本询问是否启用 xxhash：
-- 日常同步选 `n`（默认，仅 mtime + size，速度快）
-- 怀疑有文件内容变化但时间戳未变时选 `y`（更精确，大文件会慢一些）
+脚本固定使用 `XXH3` 生成清单，用于准确识别文件移动和内容一致性。
 
 完成后在 `sync-tools\` 目录（与 bat 同级）生成 `manifest.json.xz`，将其拷贝到本机。
 脚本会询问是否保存到默认目录，选 `n` 可弹窗另存到其他位置。
 
-### 步骤 3：本机生成增量包
+### 步骤 3：本机生成同步包
 
 双击 `sync-tools\本机打包.bat`，或将 `manifest.json.xz` 直接**拖到** bat 图标上。
 
@@ -107,11 +105,12 @@ copy sync-tools\.syncignore.example .syncignore
 
 1. 弹窗选择云端清单文件（拖入 bat 时跳过此步）
 2. 读取云端清单，扫描本机目录
-3. 显示差异汇总（新增 / 更新 / 待删除文件数及总大小）
-4. 可选预览详细差异列表
-5. 确认打包后询问输出路径（默认 `sync-tools\`，选 `n` 可弹窗另存）
-6. 复制差异文件并打包（差异 > 1 GB 自动按 1 GB 分卷）
-7. 输出 `sync_<时间戳>.7z` 到所选目录
+3. 选择打包模式：完全镜像（默认）或增量更新
+4. 显示差异汇总（新增 / 更新 / 移动 / 待删除文件数及总大小）
+5. 可选预览详细差异列表
+6. 确认打包后询问输出路径（默认 `sync-tools\`，选 `n` 可弹窗另存）
+7. 复制差异文件并打包（差异 > 1 GB 自动按 1 GB 分卷）
+8. 输出 `sync_<时间戳>.7z` 到所选目录
 
 将输出文件上传到云端（如有分卷：`.7z.001` `.7z.002` ...，需全部上传）。
 
@@ -123,13 +122,15 @@ REM 例如：
 7z x sync_20260420_103000.7z -oD:\MyProject -y
 ```
 
-### 步骤 5：云端处理删除（如有）
+### 步骤 5：云端处理删除/移动（镜像模式如有）
 
-如果本机有删除文件，压缩包内会含 `_apply_sync\` 子目录，里面包含 `apply_sync.bat` 等配套文件。  
+如果镜像模式下存在删除或移动项，压缩包内会含 `_apply_sync\` 子目录，里面包含 `apply_sync.bat` 等配套文件。
 解压后进入 `_apply_sync\` 文件夹，**双击 `apply_sync.bat`** 即可。
 
 - 被删除的文件移入 `sync-tools\rm\` 软删除，不会永久丢失
+- 移动项会在云端就地重命名，不重新上传文件内容
 - 脚本执行完毕后自动删除整个 `_apply_sync\` 文件夹
+- 增量更新模式不会生成删除/移动指令，云端旧路径文件会保留
 
 ---
 
@@ -177,17 +178,17 @@ file:Thumbs.db
 ## 命令行用法（高级）
 
 ```bat
-REM 云端生成清单（带 xxhash）
-python sync-tools\core\generate\generate_manifest.py . --hash
+REM 云端生成清单（XXH3）
+.venv\Scripts\python.exe sync-tools\core\generate\generate_manifest.py .
 
 REM 本机 dry-run（只看差异，不打包）
 .venv\Scripts\python.exe sync-tools\core\pack\build_sync_package.py . manifest.json.xz --dry-run
 
-REM 本机打包（500m 分卷）
+REM 本机完全镜像打包（500m 分卷）
 .venv\Scripts\python.exe sync-tools\core\pack\build_sync_package.py . manifest.json.xz --volume-size 500m
 
-REM 本机打包（带 hash 二次校验）
-.venv\Scripts\python.exe sync-tools\core\pack\build_sync_package.py . manifest.json.xz --hash-check
+REM 本机增量更新打包（只新增/更新，不删除/移动）
+.venv\Scripts\python.exe sync-tools\core\pack\build_sync_package.py . manifest.json.xz --mode incremental
 ```
 
 ### generate_manifest.py 参数
@@ -195,8 +196,8 @@ REM 本机打包（带 hash 二次校验）
 | 参数 | 说明 |
 |------|------|
 | `target_dir` | 扫描目录（`.` 表示当前目录） |
-| `--hash` | 启用文件 hash |
-| `--hash-algo` | 算法：`xxh3_64`（默认）/ `xxh128` / `sha256` |
+
+清单固定使用 `XXH3`，需要在 `.venv` 中安装 `xxhash`。
 
 ### build_sync_package.py 参数
 
@@ -205,6 +206,7 @@ REM 本机打包（带 hash 二次校验）
 | `local_dir` | 本地目录（`.` 表示当前目录） |
 | `manifest` | 云端清单路径（.json 或 .json.xz） |
 | `--hash-check` | 对疑似差异文件做 hash 二次验证 |
+| `--mode` | `mirror` 完全镜像（默认）/ `incremental` 增量更新 |
 | `--volume-size` | 分卷大小，如 `500m` `1g`（差异 > 1 GB 自动分卷） |
 | `--dry-run` | 只看差异报告，不打包 |
 | `--keep-temp` | 保留临时目录（排查用） |
@@ -224,7 +226,7 @@ REM 本机打包（带 hash 二次校验）
     ├── config.py             ← 配置加载（读取 .env）
     ├── setup_sync.py         ← 部署检测
     ├── core/                 ← 核心模块
-    │   ├── apply/            增量同步清理脚本
+    │   ├── apply/            同步清理脚本
     │   │   ├── apply_sync.py
     │   │   └── apply_sync.bat
     │   ├── build/             本机打包交互脚本
@@ -249,12 +251,12 @@ REM 本机打包（带 hash 二次校验）
 └── ... 其他项目文件 ...
 ```
 
-解压后的增量包结构（供参考）：
+解压后的同步包结构（供参考）：
 
 ```
 <解压目录>/
 ├── ... 差异文件（直接覆盖到项目根）...
-└── _apply_sync/              ← 仅在有待删除文件/目录时存在
+└── _apply_sync/              ← 镜像模式有删除/移动项时存在
     ├── apply_sync.bat        ← 双击执行，完成后整个文件夹自动删除
     ├── apply_sync.py
     ├── delete_list.txt
@@ -266,13 +268,13 @@ REM 本机打包（带 hash 二次校验）
 ## 常见问题
 
 **Q: 云端 CPU 弱，生成清单很慢？**  
-A: 默认模式（不启用 xxhash）只读 mtime + size，速度极快。xxhash 只在需要精确校验时使用。
+A: 现在固定使用 `XXH3`，会读取文件内容，速度较快，并能稳定识别移动文件。
 
 **Q: 上传到一半断了怎么办？**  
 A: 差异 > 1 GB 时自动分卷（每卷 1 GB），只需重传未完成的卷，其余卷不受影响。
 
 **Q: 云端无法访问 PyPI，无法安装 xxhash / rich？**  
-A: 可在本机安装好依赖后，将整个 `.venv` 目录打包上传到云端解压即可。或在 `.env` 中设置 `VENV_PYTHON=python` 使用系统 Python，但届时无进度条显示。
+A: 可在本机安装好依赖后，将整个 `.venv` 目录打包上传到云端解压。项目脚本应使用项目根目录下的 `.venv`，不要使用全局 Python 或 conda 环境。
 
 **Q: 想把 sync-tools 放到其他位置？**  
 A: 在 `sync-tools\.env` 中添加 `ROOT=<项目根绝对路径>`，其余配置不变。
@@ -280,5 +282,5 @@ A: 在 `sync-tools\.env` 中添加 `ROOT=<项目根绝对路径>`，其余配置
 **Q: apply_sync.bat 执行报路径错误？**  
 A: 检查解压路径是否含特殊字符（如末尾空格）。可改用命令行手动指定：  
 ```bat
-python _apply_sync\apply_sync.py "D:\My Project"
+.venv\Scripts\python.exe _apply_sync\apply_sync.py "D:\My Project"
 ```

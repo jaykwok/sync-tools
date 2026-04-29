@@ -10,6 +10,7 @@ from core.sync.sync_common import (
     parse_mtime,
     compute_hash,
     default_hash_algo,
+    hash_algo_display_name,
     human_readable_size,
     quick_scan,
     scan_directory,

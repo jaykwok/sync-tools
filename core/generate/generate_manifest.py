@@ -19,14 +19,6 @@ def main():
         description="扫描项目目录并生成 manifest.json.xz"
     )
     parser.add_argument("target_dir", help="要扫描的目录")
-    parser.add_argument(
-        "--hash", dest="enable_hash", action="store_true",
-        help="Enable hash (default: xxh3_64 if xxhash installed, else sha256)"
-    )
-    parser.add_argument(
-        "--hash-algo", dest="hash_algo", default=None,
-        help="Hash algorithm: xxh3_64 (default), xxh128, sha256"
-    )
 
     args = parser.parse_args()
 
@@ -35,16 +27,15 @@ def main():
         sys.exit(1)
 
     target_dir_abs = os.path.abspath(args.target_dir)
-    hash_algo = args.hash_algo or default_hash_algo()
+    hash_algo = default_hash_algo()
 
-    files, errors = scan_directory(target_dir_abs, enable_hash=args.enable_hash,
-                                   hash_algo=hash_algo)
+    files, errors = scan_directory(target_dir_abs, enable_hash=True, hash_algo=hash_algo)
 
     manifest = {
         "generated_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "root_dir": target_dir_abs,
-        "hash_enabled": args.enable_hash,
-        "hash_algo": hash_algo if args.enable_hash else None,
+        "hash_enabled": True,
+        "hash_algo": hash_algo,
         "file_count": len(files),
         "files": files,
     }

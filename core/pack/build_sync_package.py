@@ -1,4 +1,4 @@
-"""本地脚本：读取云端清单，差异比对，生成增量同步压缩包"""
+"""本地脚本：读取云端清单，差异比对，生成同步压缩包"""
 
 import argparse
 import json
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from core.sync.sync_common import (
     scan_directory, parse_mtime,
     compute_hash, human_readable_size,
-    find_7z, load_cloud_manifest,
+    find_7z, load_cloud_manifest, hash_algo_display_name,
 )
 from config import (
     SEVEN_ZIP_EXTRA, FILE_DIR, MANIFESTS_DIR, RM_DIR, SYNC_TOOLS_DIR,
@@ -23,7 +23,9 @@ from config import (
 
 def compare_files(local_files: list, cloud_manifest: dict,
                   hash_check: bool = False, local_dir: str = "") -> dict:
-    cloud_hash_algo = cloud_manifest.get("hash_algo") or "sha256"
+    cloud_hash_algo = cloud_manifest.get("hash_algo") or "xxh3_64"
+    if cloud_hash_algo != "xxh3_64":
+        raise ValueError(f"不支持的云端清单 hash 算法: {cloud_hash_algo}；请重新生成 XXH3 清单")
     cloud_map = {entry["path"]: entry for entry in cloud_manifest["files"]}
     local_paths = {f["path"] for f in local_files}
 
@@ -36,7 +38,7 @@ def compare_files(local_files: list, cloud_manifest: dict,
         cloud_entry = cloud_map.get(path)
 
         if cloud_entry is None:
-            new_files.append({"path": path, "size": local_file["size"]})
+            new_files.append({"path": path, "size": local_file["size"], "hash": local_file.get("hash", "")})
             continue
 
         if local_file["size"] != cloud_entry["size"]:
@@ -57,16 +59,54 @@ def compare_files(local_files: list, cloud_manifest: dict,
         else:
             skipped_files.append(path)
 
-    # 云端有、本机没有的文件 → 待删除
+    # 云端有、本机没有的文件 → 待删除候选
     deleted_files = [
-        {"path": path}
+        {"path": path, "hash": cloud_map[path].get("hash", ""), "size": cloud_map[path].get("size", 0)}
         for path in cloud_map
         if path not in local_paths
     ]
     deleted_files.sort(key=lambda x: x["path"])
 
-    # 推断孤儿目录：云端文件所在目录集合 - 本机文件所在目录集合
-    # 只保留"删完文件后本机已不存在的目录"（祖先目录也纳入）
+    # ── 移动检测：(size, hash) 精确匹配 ──────────────────────────
+    # 构建「待删除」侧的 (size, hash) 索引；hash 为空时不参与移动检测
+    deleted_by_key: dict[tuple, list] = {}
+    for entry in deleted_files:
+        h = entry.get("hash", "")
+        if h:
+            key = (entry["size"], h)
+            deleted_by_key.setdefault(key, []).append(entry)
+
+    moved_files: list[dict] = []
+    remaining_new: list[dict] = []
+
+    for new_entry in sorted(new_files, key=lambda x: x["path"]):
+        h = new_entry.get("hash", "")
+        if h:
+            key = (new_entry["size"], h)
+            candidates = deleted_by_key.get(key)
+            if candidates:
+                old_entry = candidates.pop(0)
+                if not candidates:
+                    del deleted_by_key[key]
+                moved_files.append({
+                    "old_path": old_entry["path"],
+                    "new_path": new_entry["path"],
+                    "size": new_entry["size"],
+                    "hash": h,
+                })
+                continue
+        remaining_new.append(new_entry)
+
+    # 重建 deleted_files：去掉已匹配为 move 的
+    moved_old_paths = {m["old_path"] for m in moved_files}
+    deleted_files = [e for e in deleted_files if e["path"] not in moved_old_paths]
+
+    # new_files 只保留未匹配的（供 copy 和报告用，strip hash 字段使接口向下兼容）
+    new_files = [{"path": e["path"], "size": e["size"]} for e in remaining_new]
+    # deleted_files strip extra fields
+    deleted_files = [{"path": e["path"]} for e in deleted_files]
+
+    # 推断孤儿目录：基于更新后的 deleted_files 计算
     def ancestors(p: str) -> set[str]:
         parts = p.split("/")
         return {"/".join(parts[:i]) for i in range(1, len(parts))}
@@ -79,7 +119,7 @@ def compare_files(local_files: list, cloud_manifest: dict,
     for f in local_files:
         local_dirs |= ancestors(f["path"])
 
-    deleted_dirs = sorted(cloud_dirs - local_dirs, reverse=True)  # 深度优先，先删子目录
+    deleted_dirs = sorted(cloud_dirs - local_dirs, reverse=True)
 
     return {
         "new_files": new_files,
@@ -87,19 +127,36 @@ def compare_files(local_files: list, cloud_manifest: dict,
         "skipped_files": skipped_files,
         "deleted_files": deleted_files,
         "deleted_dirs": deleted_dirs,
+        "moved_files": moved_files,
     }
+
+
+def apply_pack_mode(diff_result: dict, mode: str) -> dict:
+    """增量模式：移动还原为普通新增，清空删除/移动指令。"""
+    if mode == "incremental":
+        for m in diff_result.get("moved_files", []):
+            diff_result["new_files"].append({"path": m["new_path"], "size": m["size"]})
+        diff_result["new_files"].sort(key=lambda x: x["path"])
+        diff_result["moved_files"] = []
+        diff_result["deleted_files"] = []
+        diff_result["deleted_dirs"] = []
+    return diff_result
 
 
 # === 报告生成 ===
 
 def generate_reports(diff_result: dict, local_dir: str, manifest_path: str,
                      total_local: int, total_cloud: int, errors: list,
-                     volume_size_bytes: int, report_dir: str, timestamp: str):
+                     volume_size_bytes: int, report_dir: str, timestamp: str,
+                     pack_mode: str = "mirror"):
     all_diff = diff_result["new_files"] + diff_result["updated_files"]
     diff_total_size = sum(f["size"] for f in all_diff)
+    moved_files = diff_result.get("moved_files", [])
+    moved_total_size = sum(m["size"] for m in moved_files)
 
     report = {
         "generated_at": datetime.now().astimezone().isoformat(),
+        "pack_mode": pack_mode,
         "local_dir": local_dir,
         "cloud_manifest": manifest_path,
         "summary": {
@@ -107,6 +164,9 @@ def generate_reports(diff_result: dict, local_dir: str, manifest_path: str,
             "total_cloud_files": total_cloud,
             "new_files": len(diff_result["new_files"]),
             "updated_files": len(diff_result["updated_files"]),
+            "moved_files": len(moved_files),
+            "moved_saved_bytes": moved_total_size,
+            "moved_saved_bytes_human": human_readable_size(moved_total_size),
             "deleted_files": len(diff_result["deleted_files"]),
             "skipped_files": len(diff_result["skipped_files"]),
             "error_files": len(errors),
@@ -116,6 +176,7 @@ def generate_reports(diff_result: dict, local_dir: str, manifest_path: str,
         },
         "new_files": diff_result["new_files"],
         "updated_files": diff_result["updated_files"],
+        "moved_files": moved_files,
         "deleted_files": diff_result["deleted_files"],
         "errors": errors,
     }
@@ -155,6 +216,14 @@ def write_sync_manifest(temp_dir: str, local_dir: str, diff_result: dict, hash_c
     ignore_dirs, ignore_files = init_ignore_rules(local_dir)
     all_diff = diff_result["new_files"] + diff_result["updated_files"]
     total_size = sum(f["size"] for f in all_diff)
+    moved_files = diff_result.get("moved_files", [])
+    try:
+        rm_dir = os.path.relpath(str(RM_DIR), os.path.abspath(local_dir)).replace(os.sep, "/")
+        if rm_dir.startswith("../") or rm_dir == ".." or os.path.isabs(rm_dir):
+            rm_dir = "sync-tools/rm"
+    except ValueError:
+        rm_dir = "sync-tools/rm"
+
     manifest = {
         "pack_time": datetime.now().astimezone().isoformat(),
         "source_dir": local_dir,
@@ -165,7 +234,8 @@ def write_sync_manifest(temp_dir: str, local_dir: str, diff_result: dict, hash_c
         "ignore_dirs": ignore_dirs,
         "ignore_files": ignore_files,
         "deleted_files": [e["path"] for e in diff_result["deleted_files"]],
-        "rm_dir": str(RM_DIR),
+        "moved_files": [{"old_path": m["old_path"], "new_path": m["new_path"], "size": m["size"]} for m in moved_files],
+        "rm_dir": rm_dir,
     }
     meta_dir = os.path.join(temp_dir, APPLY_SYNC_SUBDIR)
     os.makedirs(meta_dir, exist_ok=True)
@@ -175,8 +245,9 @@ def write_sync_manifest(temp_dir: str, local_dir: str, diff_result: dict, hash_c
 
 # === 删除列表 ===
 
-def write_delete_list(temp_dir: str, deleted_files: list, deleted_dirs: list):
-    if not deleted_files and not deleted_dirs:
+def write_delete_list(temp_dir: str, deleted_files: list, deleted_dirs: list,
+                      moved_files: list | None = None):
+    if not deleted_files and not deleted_dirs and not moved_files:
         return
     meta_dir = os.path.join(temp_dir, APPLY_SYNC_SUBDIR)
     os.makedirs(meta_dir, exist_ok=True)
@@ -190,6 +261,10 @@ def write_delete_list(temp_dir: str, deleted_files: list, deleted_dirs: list):
             f.write("[dirs]\n")
             for d in deleted_dirs:
                 f.write(d + "\n")
+        if moved_files:
+            f.write("[moves]\n")
+            for m in moved_files:
+                f.write(f"{m['old_path']} -> {m['new_path']}\n")
 
 
 # === apply_sync.py 嵌入 ===
@@ -242,11 +317,13 @@ def parse_volume_size(size_str: str) -> int:
 # === 主流程 ===
 
 def main():
-    parser = argparse.ArgumentParser(description="读取云端清单，差异比对，生成增量同步压缩包")
+    parser = argparse.ArgumentParser(description="读取云端清单，差异比对，生成同步压缩包")
     parser.add_argument("local_dir", help="本地项目目录路径")
     parser.add_argument("manifest", help="云端 manifest.json 或 manifest.json.xz 文件路径")
     parser.add_argument("--hash-check", action="store_true",
                         help="对疑似差异文件做哈希验证（使用云端清单中记录的算法）")
+    parser.add_argument("--mode", choices=["mirror", "incremental"], default="mirror",
+                        help="mirror=完全镜像（默认，云端与本地完全一致）；incremental=增量更新（只新增/更新，不删除/移动）")
     parser.add_argument("--volume-size", default=DEFAULT_VOLUME_SIZE,
                         help=f"分卷阈值（默认 {DEFAULT_VOLUME_SIZE}），如 500m, 1g, 2g")
     parser.add_argument("--dry-run", action="store_true",
@@ -284,12 +361,12 @@ def main():
         print(f"错误：云端清单格式无效 - {e}", file=sys.stderr)
         sys.exit(1)
     total_cloud = len(cloud_manifest["files"])
-    hash_algo_info = cloud_manifest.get("hash_algo") or "（未启用）"
+    hash_algo_info = hash_algo_display_name(cloud_manifest.get("hash_algo"))
     print(f"  云端文件数: {total_cloud}  hash算法: {hash_algo_info}")
 
     # Step 3: 扫描本地目录
     print(f"扫描本地目录: {local_dir}")
-    local_files, scan_errors = scan_directory(local_dir)
+    local_files, scan_errors = scan_directory(local_dir, enable_hash=True)
     total_local = len(local_files)
     print(f"  本地文件数: {total_local}")
     if scan_errors:
@@ -299,13 +376,19 @@ def main():
     print("执行差异比对...")
     diff_result = compare_files(local_files, cloud_manifest,
                                 hash_check=args.hash_check, local_dir=local_dir)
+    apply_pack_mode(diff_result, args.mode)
+    mode_label = "完全镜像" if args.mode == "mirror" else "增量更新"
+    print(f"打包模式: {mode_label}")
     diff_count = len(diff_result["new_files"]) + len(diff_result["updated_files"])
     all_diff = diff_result["new_files"] + diff_result["updated_files"]
     diff_size = sum(f["size"] for f in all_diff)
+    moved_files = diff_result.get("moved_files", [])
+    moved_size = sum(m["size"] for m in moved_files)
 
     print(f"\n比对结果:")
     print(f"  新增文件: {len(diff_result['new_files'])}")
     print(f"  更新文件: {len(diff_result['updated_files'])}")
+    print(f"  移动文件: {len(moved_files)}  (节省 {human_readable_size(moved_size)})")
     print(f"  待删除文件（云端有/本机无）: {len(diff_result['deleted_files'])}")
     print(f"  待删除目录: {len(diff_result.get('deleted_dirs', []))}")
     print(f"  跳过文件: {len(diff_result['skipped_files'])}")
@@ -316,12 +399,15 @@ def main():
         diff_result, local_dir, manifest_path,
         total_local, total_cloud, scan_errors,
         volume_size_bytes, report_dir, timestamp,
+        pack_mode=args.mode,
     )
     print(f"\n差异报告: {report_json}")
 
-    # Step 6: 差异为零（含删除）
-    has_deletes = len(diff_result["deleted_files"]) > 0 or len(diff_result.get("deleted_dirs", [])) > 0
-    if diff_count == 0 and not has_deletes:
+    # Step 6: 差异为零（含删除/移动）
+    has_meta = (len(diff_result["deleted_files"]) > 0
+                or len(diff_result.get("deleted_dirs", [])) > 0
+                or len(moved_files) > 0)
+    if diff_count == 0 and not has_meta:
         print("\n没有需要同步的文件，退出。")
         return
 
@@ -339,13 +425,13 @@ def main():
         if copy_errors:
             print(f"  复制错误: {len(copy_errors)} 个文件跳过")
 
-    # Step 9: 有删除时写入 _apply_sync/ 套件
-    if has_deletes:
+    # Step 9: 有删除/移动时写入 _apply_sync/ 套件
+    if has_meta:
         del_dirs = diff_result.get("deleted_dirs", [])
         write_sync_manifest(temp_dir, local_dir, diff_result, args.hash_check)
-        write_delete_list(temp_dir, diff_result["deleted_files"], del_dirs)
+        write_delete_list(temp_dir, diff_result["deleted_files"], del_dirs, moved_files)
         embed_apply_sync(temp_dir)
-        print(f"  delete_list.txt: {len(diff_result['deleted_files'])} 个文件，{len(del_dirs)} 个目录")
+        print(f"  delete_list.txt: {len(diff_result['deleted_files'])} 个文件，{len(del_dirs)} 个目录，{len(moved_files)} 个移动")
 
     # Step 11: 7z 打包
     output_7z = os.path.join(file_dir, f"sync_{timestamp}.7z")
@@ -376,8 +462,8 @@ def main():
             fpath = os.path.join(file_dir, fname)
             print(f"  {fpath}  ({human_readable_size(os.path.getsize(fpath))})")
 
-    if has_deletes:
-        print(f"\n解压后，进入 _apply_sync/ 文件夹，双击 apply_sync.bat 处理删除。")
+    if has_meta:
+        print(f"\n解压后，进入 _apply_sync/ 文件夹，双击 apply_sync.bat 处理删除与移动。")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 """公共工具库：忽略规则、路径归一化、文件 hash、目录扫描、7z 检测、云端清单加载、交互询问。"""
 
 import fnmatch
-import hashlib
 import json
 import lzma
 import os
@@ -124,12 +123,11 @@ def parse_mtime(iso_str: str) -> float:
 def compute_hash(
     filepath: str, algo: str = "xxh3_64", on_bytes: Callable[[int], None] | None = None
 ) -> str:
-    if algo == "xxh3_64" and _XXHASH_AVAILABLE:
-        h = _xxhash.xxh3_64()
-    elif algo == "xxh128" and _XXHASH_AVAILABLE:
-        h = _xxhash.xxh128()
-    else:
-        h = hashlib.sha256()
+    if algo != "xxh3_64":
+        raise ValueError(f"不支持的 hash 算法: {algo}；仅支持 XXH3")
+    if not _XXHASH_AVAILABLE:
+        raise RuntimeError("缺少 xxhash 依赖，请在项目 .venv 中安装 xxhash")
+    h = _xxhash.xxh3_64()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
@@ -139,7 +137,16 @@ def compute_hash(
 
 
 def default_hash_algo() -> str:
-    return "xxh3_64" if _XXHASH_AVAILABLE else "sha256"
+    if not _XXHASH_AVAILABLE:
+        raise RuntimeError("缺少 xxhash 依赖，请在项目 .venv 中安装 xxhash")
+    return "xxh3_64"
+
+
+def hash_algo_display_name(algo: str | None = None) -> str:
+    algo = algo or default_hash_algo()
+    if algo == "xxh3_64":
+        return "XXH3"
+    return algo
 
 
 def human_readable_size(size_bytes: int) -> str:

@@ -1,6 +1,6 @@
 """
-云端增量同步清理脚本
-将 delete_list.txt 中的文件/目录移动到 sync-tools/rm/，完成后自删 _apply_sync 文件夹。
+云端同步清理脚本
+按 delete_list.txt 处理移动项，并将删除项移动到当前项目的 sync-tools/rm/。
 由 apply_sync.bat 自动调用，无需手动传参。
 """
 import os
@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 
-def parse_delete_list(path: str) -> tuple[list[str], list[str]]:
-    files, dirs = [], []
+def parse_delete_list(path: str) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    files, dirs, moves = [], [], []
     section = None
     with open(path, "r", encoding="utf-8") as f:
         for raw in f:
@@ -22,13 +22,26 @@ def parse_delete_list(path: str) -> tuple[list[str], list[str]]:
                 section = "files"
             elif line == "[dirs]":
                 section = "dirs"
+            elif line == "[moves]":
+                section = "moves"
             elif section == "files":
                 files.append(line)
             elif section == "dirs":
                 dirs.append(line)
+            elif section == "moves":
+                if " -> " in line:
+                    old, new = line.split(" -> ", 1)
+                    moves.append((old.strip(), new.strip()))
             else:
                 files.append(line)
-    return files, dirs
+    return files, dirs, moves
+
+
+def resolve_rm_dir(rm_dir: str | None, project_root: Path) -> Path:
+    candidate = Path((rm_dir or "sync-tools/rm").replace("\\", "/"))
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(f"sync_manifest.json 中的 rm_dir 必须是项目内相对路径: {rm_dir}")
+    return project_root / candidate
 
 
 def main():
@@ -60,25 +73,70 @@ def main():
         _self_clean(script_dir, USE_RICH)
         return
 
-    del_files, del_dirs = parse_delete_list(str(delete_list_path))
+    del_files, del_dirs, moves = parse_delete_list(str(delete_list_path))
 
-    rm_base_path: Path | None = None
+    rm_base_path = project_root / "sync-tools" / "rm"
     sync_manifest_path = script_dir / "sync_manifest.json"
     if sync_manifest_path.exists():
         try:
             import json as _json
             meta = _json.loads(sync_manifest_path.read_text(encoding="utf-8-sig"))
-            rm_dir_str = meta.get("rm_dir")
-            if rm_dir_str:
-                rm_base_path = Path(rm_dir_str)
         except Exception:
             pass
-    if rm_base_path is None:
-        rm_base_path = project_root / "sync-tools" / "rm"
+        else:
+            rm_base_path = resolve_rm_dir(meta.get("rm_dir"), project_root)
     rm_base = rm_base_path / ("sync_delete_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
     rm_base.mkdir(parents=True, exist_ok=True)
 
     file_moved = file_skipped = dir_moved = dir_skipped = 0
+    move_done = move_skipped = move_conflict = 0
+
+    # ── 先执行移动（避免父目录被删除后源文件丢失）─────────────────
+    if moves:
+        if USE_RICH:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(bar_width=35),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                console=console, transient=True,
+            ) as prog:
+                task = prog.add_task("执行移动...", total=len(moves))
+                for old_rel, new_rel in moves:
+                    src = project_root / Path(old_rel.replace("/", os.sep))
+                    dst = project_root / Path(new_rel.replace("/", os.sep))
+                    prog.update(task, description=new_rel[-50:] if len(new_rel) > 50 else new_rel)
+                    if not src.exists():
+                        move_skipped += 1
+                        prog.update(task, advance=1)
+                        continue
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    if dst.exists():
+                        conflict_dst = rm_base / Path(new_rel.replace("/", os.sep))
+                        conflict_dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(dst), str(conflict_dst))
+                        move_conflict += 1
+                    shutil.move(str(src), str(dst))
+                    move_done += 1
+                    prog.update(task, advance=1)
+        else:
+            for old_rel, new_rel in moves:
+                src = project_root / Path(old_rel.replace("/", os.sep))
+                dst = project_root / Path(new_rel.replace("/", os.sep))
+                if not src.exists():
+                    move_skipped += 1
+                    continue
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if dst.exists():
+                    conflict_dst = rm_base / Path(new_rel.replace("/", os.sep))
+                    conflict_dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(dst), str(conflict_dst))
+                    move_conflict += 1
+                    print(f"  [移动冲突] 原目标已软删: {new_rel}")
+                shutil.move(str(src), str(dst))
+                move_done += 1
+                print(f"  [移动] {old_rel} -> {new_rel}")
 
     if del_files:
         if USE_RICH:
@@ -149,6 +207,7 @@ def main():
                     dir_skipped += 1
 
     summary = (
+        f"移动: 成功 {move_done} / 冲突软删 {move_conflict} / 跳过 {move_skipped}\n"
         f"文件: 移动 {file_moved} / 跳过 {file_skipped}  "
         f"目录: 移动 {dir_moved} / 跳过 {dir_skipped}\n"
         f"移动目标: {rm_base}"
