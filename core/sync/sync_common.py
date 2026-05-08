@@ -6,6 +6,8 @@ import lzma
 import os
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Callable
 
@@ -149,6 +151,13 @@ def hash_algo_display_name(algo: str | None = None) -> str:
     return algo
 
 
+def get_hash_worker_count() -> int:
+    """返回当前进程可用的 hash 线程数。"""
+    cpu_count_fn = getattr(os, "process_cpu_count", None)
+    count = cpu_count_fn() if cpu_count_fn else os.cpu_count()
+    return max(1, count or 1)
+
+
 def human_readable_size(size_bytes: int) -> str:
     units = ["B", "KB", "MB", "GB", "TB", "PB"]
     size = float(size_bytes)
@@ -161,13 +170,9 @@ def human_readable_size(size_bytes: int) -> str:
 
 # ── 目录扫描 ─────────────────────────────────────────────────────
 
-def quick_scan(root_dir: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    return scan_directory(root_dir, enable_hash=False)
-
 
 def scan_directory(
     root_dir: str,
-    enable_hash: bool = False,
     hash_algo: str | None = None,
     on_file: Callable[[str, int], None] | None = None,
     on_bytes: Callable[[int], None] | None = None,
@@ -180,6 +185,7 @@ def scan_directory(
     ignore_dirs, ignore_files = init_ignore_rules(root_dir)
 
     files: list[dict[str, Any]] = []
+    hash_targets: list[tuple[dict[str, Any], str]] = []
     errors: list[dict[str, str]] = []
 
     for current_root, dirnames, filenames in os.walk(root_dir):
@@ -206,18 +212,58 @@ def scan_directory(
                     "mtime": format_mtime(st.st_mtime),
                     "hash": "",
                 }
-                if enable_hash:
-                    file_info["hash"] = compute_hash(filepath, hash_algo, on_bytes=on_bytes)
                 files.append(file_info)
-                if on_file:
-                    on_file(rel_path, file_info["size"])
-                if progress is not None:
-                    try:
-                        progress.update(1)
-                    except Exception:
-                        pass
+                hash_targets.append((file_info, filepath))
             except OSError as exc:
                 errors.append({"path": rel_path, "error": str(exc)})
+
+    callback_lock = threading.Lock()
+
+    def on_hash_bytes(n: int) -> None:
+        if on_bytes is None:
+            return
+        with callback_lock:
+            on_bytes(n)
+
+    def finish_file(file_info: dict[str, Any]) -> None:
+        if on_file:
+            on_file(file_info["path"], file_info["size"])
+        if progress is not None:
+            try:
+                progress.update(1)
+            except Exception:
+                pass
+
+    def hash_one(file_info: dict[str, Any], filepath: str) -> tuple[dict[str, Any], str | None]:
+        try:
+            file_info["hash"] = compute_hash(filepath, hash_algo, on_bytes=on_hash_bytes)
+            return file_info, None
+        except OSError as exc:
+            return file_info, str(exc)
+
+    failed_paths: set[str] = set()
+    worker_count = get_hash_worker_count()
+    if worker_count == 1 or len(hash_targets) <= 1:
+        for file_info, filepath in hash_targets:
+            hashed_info, error = hash_one(file_info, filepath)
+            if error:
+                failed_paths.add(hashed_info["path"])
+                errors.append({"path": hashed_info["path"], "error": error})
+            else:
+                finish_file(hashed_info)
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(hash_one, file_info, filepath) for file_info, filepath in hash_targets]
+            for future in as_completed(futures):
+                hashed_info, error = future.result()
+                if error:
+                    failed_paths.add(hashed_info["path"])
+                    errors.append({"path": hashed_info["path"], "error": error})
+                else:
+                    finish_file(hashed_info)
+
+    if failed_paths:
+        files = [f for f in files if f["path"] not in failed_paths]
 
     files.sort(key=lambda x: x["path"])
     return files, errors

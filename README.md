@@ -189,6 +189,8 @@ REM 本机完全镜像打包（500m 分卷）
 
 REM 本机增量更新打包（只新增/更新，不删除/移动）
 .venv\Scripts\python.exe sync-tools\core\pack\build_sync_package.py . manifest.json.xz --mode incremental
+
+REM 也可使用单字母缩写：--mode m / --mode i
 ```
 
 ### generate_manifest.py 参数
@@ -197,7 +199,7 @@ REM 本机增量更新打包（只新增/更新，不删除/移动）
 |------|------|
 | `target_dir` | 扫描目录（`.` 表示当前目录） |
 
-清单固定使用 `XXH3`，需要在 `.venv` 中安装 `xxhash`。
+清单固定使用 `XXH3`，扫描时会自动按系统可用 CPU 数启用多线程 hash 计算；需要在 `.venv` 中安装 `xxhash`。
 
 ### build_sync_package.py 参数
 
@@ -205,8 +207,7 @@ REM 本机增量更新打包（只新增/更新，不删除/移动）
 |------|------|
 | `local_dir` | 本地目录（`.` 表示当前目录） |
 | `manifest` | 云端清单路径（.json 或 .json.xz） |
-| `--hash-check` | 对疑似差异文件做 hash 二次验证 |
-| `--mode` | `mirror` 完全镜像（默认）/ `incremental` 增量更新 |
+| `--mode` | `mirror`/`m` 完全镜像（默认）/ `incremental`/`i` 增量更新 |
 | `--volume-size` | 分卷大小，如 `500m` `1g`（差异 > 1 GB 自动分卷） |
 | `--dry-run` | 只看差异报告，不打包 |
 | `--keep-temp` | 保留临时目录（排查用） |

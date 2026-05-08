@@ -29,7 +29,7 @@ def main():
     target_dir_abs = os.path.abspath(args.target_dir)
     hash_algo = default_hash_algo()
 
-    files, errors = scan_directory(target_dir_abs, enable_hash=True, hash_algo=hash_algo)
+    files, errors = scan_directory(target_dir_abs, hash_algo=hash_algo)
 
     manifest = {
         "generated_at": datetime.now(timezone.utc).astimezone().isoformat(),

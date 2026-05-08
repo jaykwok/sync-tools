@@ -141,7 +141,6 @@ def main():
 
         file_list, errors = scan_directory(
             str(ROOT),
-            enable_hash=True,
             hash_algo=hash_algo,
             on_file=on_file,
             on_bytes=on_bytes,

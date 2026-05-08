@@ -104,8 +104,7 @@ def scan_with_progress(root: Path) -> tuple:
         def on_bytes(n: int):
             prog.update(task, advance=n)
 
-        file_list, errors = scan_directory(str(root), enable_hash=True,
-                                           on_file=on_file, on_bytes=on_bytes)
+        file_list, errors = scan_directory(str(root), on_file=on_file, on_bytes=on_bytes)
 
     return file_list, errors
 
@@ -282,7 +281,7 @@ def main():
 
     # 差异比对
     console.print("\n比对差异...")
-    diff = compare_files(local_files, cloud_manifest, local_dir=str(ROOT))
+    diff = compare_files(local_files, cloud_manifest)
     apply_pack_mode(diff, pack_mode)
     new_n = len(diff["new_files"])
     upd_n = len(diff["updated_files"])
@@ -375,7 +374,7 @@ def main():
 
     has_meta = del_n > 0 or del_dir_n > 0 or mov_n > 0
     if has_meta:
-        write_sync_manifest(temp_dir, str(ROOT), diff, False)
+        write_sync_manifest(temp_dir, str(ROOT), diff)
         write_delete_list(
             temp_dir, diff["deleted_files"], diff.get("deleted_dirs", []),
             diff.get("moved_files", [])
